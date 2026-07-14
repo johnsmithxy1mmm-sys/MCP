@@ -130,6 +130,7 @@ API-key rail is wired via FastMCP helpers (`auth.py`), enabled by env.
 | `FREE_TIER_DELAY_SECONDS` | `60` | Free-tier data delay. |
 | `METERING_BACKEND` | `local` | `local` \| `stripe` \| `moesif`. |
 | `METERING_DB_URL` | `sqlite:///metering.db` | Usage/receipt store. |
+| `HISTORY_DB_URL` | `sqlite:///history.db` | Price-history store (live mode); Postgres/Timescale DSN for production. |
 | `X402_OPERATOR_WALLET` | — | Payee address for x402. |
 | `X402_NETWORK` | `base-sepolia` | Settlement network. |
 | `X402_FACILITATOR_URL` | — | External facilitator (optional). |
@@ -164,9 +165,10 @@ core/
   models.py     canonical pydantic models
   algorithms.py shared matcher / signals / realizable-edge (mock + live reuse)
   mock.py       realistic offline engine (default)
-  live.py       live engine: adapters + algorithms, TTL-cached
+  live.py       live engine: adapters + algorithms, TTL-cached, history ingest
+  storage.py    price-history store (SQLite default, Timescale/PG via env)
   adapters/     base.py · polymarket.py · kalshi.py (fetch + normalize only)
-tests/          test_tools.py · test_billing.py · test_adapters.py · test_inspector.md
+tests/          test_tools.py · test_billing.py · test_adapters.py · test_storage.py · test_inspector.md
 ```
 
 ## Design principles honored

@@ -16,6 +16,7 @@ from datetime import datetime
 
 from . import algorithms
 from .adapters import AdapterError, KalshiAdapter, PolymarketAdapter
+from .storage import HistoryStore
 from .models import (
     ExecutionEstimate,
     Leg,
@@ -56,6 +57,7 @@ class LiveRepo:
         }
         self._markets = _TTLCache(_MARKET_TTL)
         self._books = _TTLCache(_BOOK_TTL)
+        self._history = HistoryStore()
 
     # -- internal ---------------------------------------------------------
     def _all_markets(self, query: str | None = None) -> list[Market]:
@@ -68,6 +70,9 @@ class LiveRepo:
                 out.extend(adapter.fetch_markets(query=query))
             except AdapterError:
                 continue  # one venue down shouldn't kill the whole response
+        # Ingest a history point for every observed market (fresh fetch only).
+        for m in out:
+            self._history.record_market(m)
         self._markets.put(query or "*", out)
         return out
 
@@ -106,9 +111,9 @@ class LiveRepo:
     def get_history(
         self, venue: str, market_id: str, frm: datetime, to: datetime
     ) -> list[PricePoint]:
-        # Live history needs a time-series store (Timescale) we don't ingest yet.
-        # TODO: wire to storage.repo history once ingestion exists.
-        return []
+        # Reads points ingested by _all_markets() into the HistoryStore.
+        # Backfill depth grows with server uptime (or a Timescale DSN).
+        return self._history.query(venue, market_id, frm, to)
 
     def list_venues(self) -> list[dict]:
         counts: dict[str, int] = {}
