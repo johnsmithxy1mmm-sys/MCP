@@ -1,0 +1,138 @@
+"""Canonical pydantic models shared by the engine and the MCP layer.
+
+These are the normalized shapes the whole product speaks in. In production the
+real engine (`core.matcher`, `core.signals`, `core.edge`, `storage.repo`)
+produces and consumes exactly these types; the MCP tools only format them for
+agents. Keep this module free of transport/billing concerns.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from enum import Enum
+
+from pydantic import BaseModel, Field
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class Venue(str, Enum):
+    POLYMARKET = "polymarket"
+    KALSHI = "kalshi"
+
+
+class Side(str, Enum):
+    YES = "yes"
+    NO = "no"
+
+
+class OpportunityKind(str, Enum):
+    BUNDLE = "bundle"
+    CROSS_VENUE = "cross_venue"
+
+
+class Market(BaseModel):
+    """A normalized prediction market on a single venue."""
+
+    venue: Venue
+    market_id: str
+    title: str
+    category: str | None = None
+    yes_price: float = Field(description="Normalized YES price in [0, 1].")
+    no_price: float = Field(description="Normalized NO price in [0, 1].")
+    volume_usd: float | None = None
+    close_time: datetime | None = None
+
+    @property
+    def implied_probability(self) -> float:
+        """YES-side implied probability (== yes_price for a normalized book)."""
+        return self.yes_price
+
+
+class OrderbookLevel(BaseModel):
+    price: float
+    size_usd: float
+
+
+class OrderbookSnapshot(BaseModel):
+    """Top-of-book depth for one market, used by execution estimation."""
+
+    venue: Venue
+    market_id: str
+    as_of: datetime
+    yes_bids: list[OrderbookLevel] = Field(default_factory=list)
+    yes_asks: list[OrderbookLevel] = Field(default_factory=list)
+
+    @property
+    def top_ask_price(self) -> float | None:
+        return self.yes_asks[0].price if self.yes_asks else None
+
+    @property
+    def top_bid_price(self) -> float | None:
+        return self.yes_bids[0].price if self.yes_bids else None
+
+
+class Leg(BaseModel):
+    """One side of a trade the agent is considering.
+
+    Deliberately flat/minimal to keep the tool schema token-light.
+    """
+
+    venue: Venue
+    market_id: str
+    side: Side
+
+
+class Opportunity(BaseModel):
+    """A detected, realizable mispricing opportunity."""
+
+    kind: OpportunityKind
+    title: str
+    category: str | None = None
+    realizable_edge: float = Field(
+        description="Edge AFTER fees, gas, and slippage. Never gross."
+    )
+    max_size_usd: float = Field(
+        description="Dollar size fillable while keeping realizable_edge positive."
+    )
+    legs: list[Leg]
+    detected_at: datetime = Field(default_factory=utcnow)
+
+
+class MatchedPair(BaseModel):
+    """Two markets on different venues judged to be the same real-world event."""
+
+    event: str
+    confidence: float = Field(description="Match confidence in [0, 1].")
+    a: Market
+    b: Market
+
+    @property
+    def spread(self) -> float:
+        """Absolute YES-price spread between the two venues."""
+        return abs(self.a.yes_price - self.b.yes_price)
+
+
+class ExecutionEstimate(BaseModel):
+    """Result of simulating a fill against current depth."""
+
+    requested_size_usd: float
+    fillable_size_usd: float
+    avg_fill_price: float
+    gross_edge: float
+    fees_usd: float
+    gas_usd: float
+    slippage_usd: float
+    realizable_edge: float = Field(
+        description="Net edge after fees + gas + slippage on the fillable size."
+    )
+
+
+class PricePoint(BaseModel):
+    """One point in a historical price/spread series."""
+
+    ts: datetime
+    yes_price: float
+    spread: float | None = None

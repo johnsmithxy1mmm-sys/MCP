@@ -1,0 +1,40 @@
+# Tool tiers and per-call prices. Edit here, not in code.
+#
+# tier: "free" (price 0, funnel hook) or "paid" (per-call revenue).
+# price_usd: charged per successful call when PAID_ENABLED=true.
+#            Reference band per the product spec: $0.001 - $0.10 per call.
+# currency: settlement currency for x402 (stablecoin).
+#
+# Pricing rationale:
+#   find_mispricing / compare_across_venues  -> realtime + matcher, dearer.
+#   estimate_execution                       -> cheap realtime compute.
+#   get_market_history                       -> data product, scales with range.
+#   search / list / evaluate                 -> free discovery (funnel).
+
+currency: USDC
+
+tools:
+  # --- free tier (discovery / funnel) ---
+  search_markets:
+    tier: free
+    price_usd: 0
+  list_venues:
+    tier: free
+    price_usd: 0
+  evaluate_market:
+    tier: free
+    price_usd: 0
+
+  # --- paid tier (per-call revenue) ---
+  find_mispricing:
+    tier: paid
+    price_usd: 0.05
+  compare_across_venues:
+    tier: paid
+    price_usd: 0.02
+  estimate_execution:
+    tier: paid
+    price_usd: 0.01
+  get_market_history:
+    tier: paid
+    price_usd: 0.01

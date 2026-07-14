@@ -1,0 +1,74 @@
+"""Thin accessors to the core engine and storage.
+
+This is the ONLY place the MCP layer reaches into ``core``. Swapping the mock
+for the real engine happens here (and in ``core/mock.py``), not in the tools.
+Tools call these helpers and format the result for agents — no business logic
+lives above this line.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+# TODO: wire to real core. Today this imports the mock engine; the real engine
+# exposes the same names (core.matcher / core.signals / core.edge / storage.repo).
+from core import mock as _engine
+from core.models import (
+    ExecutionEstimate,
+    Leg,
+    Market,
+    MatchedPair,
+    OrderbookSnapshot,
+    Opportunity,
+    PricePoint,
+)
+
+repo = _engine.repo
+
+
+# --- Engine passthroughs ----------------------------------------------------
+def search_markets(query: str, category: str | None, venue: str | None) -> list[Market]:
+    return repo.search_markets(query, category=category, venue=venue)
+
+
+def list_venues() -> list[dict]:
+    return repo.list_venues()
+
+
+def get_market(venue: str, market_id: str) -> Market | None:
+    return repo.get_market(venue, market_id)
+
+
+def get_orderbook(venue: str, market_id: str) -> OrderbookSnapshot | None:
+    return repo.get_orderbook(venue, market_id)
+
+
+def get_history(
+    venue: str, market_id: str, frm: datetime, to: datetime
+) -> list[PricePoint]:
+    return repo.get_history(venue, market_id, frm, to)
+
+
+def match_event(event: str) -> MatchedPair | None:
+    return _engine.match_event(event)
+
+
+def scan_opportunities(
+    min_edge: float, kind: str | None, category: str | None
+) -> list[Opportunity]:
+    return _engine.scan_opportunities(min_edge, kind=kind, category=category)
+
+
+def realizable_edge(legs: list[Leg], size_usd: float) -> ExecutionEstimate:
+    return _engine.realizable_edge(legs, size_usd)
+
+
+# --- Staleness helpers ------------------------------------------------------
+def now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def staleness(as_of: datetime) -> dict:
+    """Standard freshness marker attached to every tool response."""
+    age = (now() - as_of).total_seconds()
+    return {"as_of": as_of.isoformat(), "data_age_seconds": round(max(0.0, age), 1)}
