@@ -1,0 +1,123 @@
+"""Polymarket adapter.
+
+Data sources (public, no auth):
+* Gamma API  https://gamma-api.polymarket.com/markets  — market metadata + prices
+* CLOB API   https://clob.polymarket.com/book?token_id=…  — orderbook depth
+
+Prices are already normalized 0..1. Orderbook sizes are in shares (~$1 notional
+at settlement), which we treat as USD-ish depth for the edge model.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from datetime import datetime, timezone
+
+from ..models import Market, OrderbookLevel, OrderbookSnapshot, Venue
+from .base import VenueAdapter, _matches_query, fetch_json
+
+GAMMA_URL = os.getenv("POLYMARKET_GAMMA_URL", "https://gamma-api.polymarket.com")
+CLOB_URL = os.getenv("POLYMARKET_CLOB_URL", "https://clob.polymarket.com")
+
+
+def _as_list(value):
+    """Gamma returns some array fields as JSON-encoded strings."""
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return []
+    return []
+
+
+def _f(value, default=0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+class PolymarketAdapter(VenueAdapter):
+    venue = Venue.POLYMARKET
+
+    def __init__(self):
+        # conditionId -> YES clob token id, populated during fetch_markets.
+        self._token_by_market: dict[str, str] = {}
+
+    # -- markets ----------------------------------------------------------
+    def fetch_markets(self, query: str | None = None, limit: int = 50) -> list[Market]:
+        params = {
+            "limit": limit, "closed": "false", "active": "true",
+            "order": "volume", "ascending": "false",
+        }
+        rows = fetch_json(GAMMA_URL, "/markets", params=params, venue="Polymarket")
+        markets: list[Market] = []
+        for row in rows if isinstance(rows, list) else []:
+            m = self._normalize_market(row)
+            if m is None:
+                continue
+            if not _matches_query(query, m):
+                continue
+            markets.append(m)
+        return markets
+
+    def _normalize_market(self, row: dict) -> Market | None:
+        prices = _as_list(row.get("outcomePrices"))
+        outcomes = _as_list(row.get("outcomes"))
+        if len(prices) < 2:
+            return None  # skip non-binary / malformed
+        # Find the YES index (default 0).
+        yes_idx = 0
+        for i, o in enumerate(outcomes):
+            if str(o).strip().lower() == "yes":
+                yes_idx = i
+                break
+        no_idx = 1 - yes_idx if len(prices) == 2 else (yes_idx + 1) % len(prices)
+        market_id = str(row.get("conditionId") or row.get("id") or "").strip()
+        if not market_id:
+            return None
+        tokens = _as_list(row.get("clobTokenIds"))
+        if tokens:
+            self._token_by_market[market_id] = str(tokens[yes_idx] if yes_idx < len(tokens) else tokens[0])
+        close_time = None
+        if row.get("endDate"):
+            try:
+                close_time = datetime.fromisoformat(str(row["endDate"]).replace("Z", "+00:00"))
+            except ValueError:
+                close_time = None
+        return Market(
+            venue=Venue.POLYMARKET,
+            market_id=market_id,
+            title=str(row.get("question") or row.get("title") or "").strip(),
+            category=(str(row["category"]).lower() if row.get("category") else None),
+            yes_price=round(_f(prices[yes_idx]), 4),
+            no_price=round(_f(prices[no_idx]), 4),
+            volume_usd=_f(row.get("volume") or row.get("volumeNum")),
+            close_time=close_time,
+        )
+
+    # -- orderbook --------------------------------------------------------
+    def fetch_orderbook(self, market_id: str) -> OrderbookSnapshot | None:
+        token_id = self._token_by_market.get(market_id, market_id)
+        data = fetch_json(CLOB_URL, "/book", params={"token_id": token_id}, venue="Polymarket")
+        asks = [
+            OrderbookLevel(price=round(_f(l.get("price")), 4), size_usd=round(_f(l.get("size")), 2))
+            for l in (data.get("asks") or [])
+        ][:10]
+        bids = [
+            OrderbookLevel(price=round(_f(l.get("price")), 4), size_usd=round(_f(l.get("size")), 2))
+            for l in (data.get("bids") or [])
+        ][:10]
+        # CLOB returns asks ascending is not guaranteed; sort for a clean top-of-book.
+        asks.sort(key=lambda l: l.price)
+        bids.sort(key=lambda l: l.price, reverse=True)
+        return OrderbookSnapshot(
+            venue=Venue.POLYMARKET,
+            market_id=market_id,
+            as_of=datetime.now(timezone.utc),
+            yes_asks=asks,
+            yes_bids=bids,
+        )

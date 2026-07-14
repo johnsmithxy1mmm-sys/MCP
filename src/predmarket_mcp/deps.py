@@ -10,9 +10,18 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-# TODO: wire to real core. Today this imports the mock engine; the real engine
-# exposes the same names (core.matcher / core.signals / core.edge / storage.repo).
-from core import mock as _engine
+# Engine selection: mock (default, offline) or live (real Polymarket/Kalshi
+# adapters). Both expose the same surface, so this is the only switch needed —
+# nothing in tools.py / the MCP layer changes.
+#   CORE_ENGINE=mock  (default)
+#   CORE_ENGINE=live  -> core.live (requires network access to venue APIs)
+import os as _os
+
+if _os.getenv("CORE_ENGINE", "mock").lower() == "live":
+    from core import live as _engine
+else:
+    from core import mock as _engine
+
 from core.models import (
     ExecutionEstimate,
     Leg,

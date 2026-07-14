@@ -10,10 +10,16 @@ The server is a **thin wrapper over a `core/` engine** (matcher, signals,
 realizable-edge, storage). It returns **intelligence only** — it never executes
 trades or holds funds.
 
-> **Core status:** the real engine isn't wired yet. `core/mock.py` provides
-> realistic, same-signature stubs so the server works end-to-end today. Every
-> seam is marked `# TODO: wire to real core`; swapping in the real engine is a
-> drop-in replacement of `core/mock.py` (the MCP layer never changes).
+> **Engine status.** Two interchangeable engines share one surface, selected by
+> `CORE_ENGINE` (the MCP layer never changes either way):
+> - **`mock`** (default) — realistic, same-signature stubs (`core/mock.py`) so
+>   the server works end-to-end offline.
+> - **`live`** — real Polymarket + Kalshi adapters (`core/adapters/`) feeding a
+>   live engine (`core/live.py`). Needs network access to the venue APIs; falls
+>   back gracefully (empty results) if a venue is unreachable.
+>
+> The shared intelligence (matcher, signals, realizable-edge) lives in
+> `core/algorithms.py` and is used by **both** engines — not duplicated.
 
 ## Tool catalog (7 tools, 1 resource, 1 prompt)
 
@@ -50,6 +56,9 @@ uv sync                                   # Python 3.12, deps
 uv run pytest                             # 22 tests, all green
 uv run python -m predmarket_mcp.server    # streamable-http on http://0.0.0.0:8000/mcp
 curl -s http://127.0.0.1:8000/health      # {"status":"ok",...}
+
+# live data from Polymarket + Kalshi (needs network egress to the venue APIs):
+CORE_ENGINE=live uv run python -m predmarket_mcp.server
 ```
 
 Verify with the official MCP Inspector (see [`tests/test_inspector.md`](./tests/test_inspector.md)):
@@ -115,6 +124,7 @@ API-key rail is wired via FastMCP helpers (`auth.py`), enabled by env.
 ### Configuration (all via env — no secrets in code)
 | Var | Default | Purpose |
 |---|---|---|
+| `CORE_ENGINE` | `mock` | `mock` (offline stubs) or `live` (Polymarket/Kalshi adapters). |
 | `PAID_ENABLED` | `false` | Master gate switch. |
 | `PAYMENT_RAIL` | `x402` | `x402` or `apikey`. |
 | `FREE_TIER_DELAY_SECONDS` | `60` | Free-tier data delay. |
@@ -152,8 +162,11 @@ src/predmarket_mcp/
   billing/      tiers.py · metering.py · x402.py · middleware.py
 core/
   models.py     canonical pydantic models
-  mock.py       realistic engine stubs (# TODO: wire to real core)
-tests/          test_tools.py · test_billing.py · test_inspector.md
+  algorithms.py shared matcher / signals / realizable-edge (mock + live reuse)
+  mock.py       realistic offline engine (default)
+  live.py       live engine: adapters + algorithms, TTL-cached
+  adapters/     base.py · polymarket.py · kalshi.py (fetch + normalize only)
+tests/          test_tools.py · test_billing.py · test_adapters.py · test_inspector.md
 ```
 
 ## Design principles honored

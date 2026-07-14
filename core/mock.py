@@ -14,6 +14,7 @@ import hashlib
 import random
 from datetime import datetime, timedelta, timezone
 
+from .algorithms import estimate_realizable_edge
 from .models import (
     ExecutionEstimate,
     Leg,
@@ -320,57 +321,10 @@ def scan_opportunities(
 def realizable_edge(legs: list[Leg], size_usd: float) -> ExecutionEstimate:
     """Simulate filling `legs` for `size_usd` and return realizable edge.
 
-    Walks current mock depth, applies venue fees + gas + slippage.
-    # TODO: wire to real core.edge.realizable_edge(...).
+    Delegates the edge math to the shared ``core.algorithms`` (same code the live
+    engine uses); only the depth source (mock ``repo``) differs.
+    # TODO: wire to real core.edge via the live engine.
     """
-    fillable = 0.0
-    weighted_price = 0.0
-    fees = 0.0
-    gas = 0.0
-    slippage = 0.0
-    gross_price_ref = 0.0
-
-    per_leg_budget = size_usd / max(1, len(legs))
-    for leg in legs:
-        book = repo.get_orderbook(leg.venue.value, leg.market_id)
-        if not book:
-            continue
-        levels = book.yes_asks if leg.side == Side.YES else book.yes_bids
-        if not levels:
-            continue
-        ref = levels[0].price
-        gross_price_ref += ref
-        remaining = per_leg_budget
-        filled_here = 0.0
-        cost = 0.0
-        for lvl in levels:
-            take = min(remaining, lvl.size_usd)
-            if take <= 0:
-                break
-            cost += take * lvl.price
-            filled_here += take
-            remaining -= take
-        if filled_here <= 0:
-            continue
-        avg = cost / filled_here
-        weighted_price += avg * filled_here
-        fillable += filled_here
-        slippage += abs(avg - ref) * filled_here
-        gas += _GAS_USD[leg.venue]
-        fees += filled_here * _FEE_BPS[leg.venue] * 0.1  # rough taker fee on notional
-
-    avg_fill = (weighted_price / fillable) if fillable else 0.0
-    gross_edge = round(len(legs) - gross_price_ref, 4) if gross_price_ref else 0.0
-    net = fillable - fees - gas - slippage
-    realizable = round((net / size_usd) if size_usd else 0.0, 4)
-
-    return ExecutionEstimate(
-        requested_size_usd=round(size_usd, 2),
-        fillable_size_usd=round(fillable, 2),
-        avg_fill_price=round(avg_fill, 4),
-        gross_edge=gross_edge,
-        fees_usd=round(fees, 2),
-        gas_usd=round(gas, 2),
-        slippage_usd=round(slippage, 2),
-        realizable_edge=realizable,
+    return estimate_realizable_edge(
+        legs, size_usd, repo.get_orderbook, fee_bps=_FEE_BPS, gas_usd=_GAS_USD
     )
