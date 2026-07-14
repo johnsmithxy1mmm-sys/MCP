@@ -58,9 +58,14 @@ def _paid_billing(tmp_path) -> BillingContext:
 async def _run_asgi(mw, body: bytes, headers: list) -> tuple[int, bytes]:
     scope = {"type": "http", "method": "POST", "path": "/mcp", "headers": headers}
     sent = []
+    # The transport yields the body once, then http.disconnect on every later
+    # receive() — exactly like a real ASGI server after the request body.
+    events = [{"type": "http.request", "body": body, "more_body": False}]
 
     async def receive():
-        return {"type": "http.request", "body": body, "more_body": False}
+        if events:
+            return events.pop(0)
+        return {"type": "http.disconnect"}
 
     async def send(m):
         sent.append(m)
@@ -79,6 +84,21 @@ def _tool_call_body(name: str, args: dict) -> bytes:
 
 
 async def _ok_downstream(scope, receive, send):
+    # Read the full body via receive (proves the middleware replays it), then
+    # do one more receive expecting http.disconnect (the real handler does this;
+    # a broken replay that emits synthetic http.request messages would hang or
+    # never deliver the disconnect).
+    body = b""
+    while True:
+        msg = await receive()
+        if msg["type"] == "http.request":
+            body += msg.get("body", b"")
+            if not msg.get("more_body", False):
+                break
+        else:
+            break
+    disconnect = await receive()
+    assert disconnect["type"] == "http.disconnect", "replay must delegate to real receive"
     await send({"type": "http.response.start", "status": 200,
                 "headers": [(b"content-type", b"application/json")]})
     await send({"type": "http.response.body", "body": b'{"ok":true}'})

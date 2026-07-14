@@ -160,13 +160,13 @@ class X402Middleware:
         body, messages = await _buffer_body(receive)
         tool_name = _paid_tool_call(body, self.billing)
         if tool_name is None:
-            return await self.app(scope, _replay(messages), send)
+            return await self.app(scope, _replay(messages, receive), send)
 
         headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
         decision = self.billing.check_x402(tool_name, headers)
         if not decision.ok:
             return await _send_402(send, decision.challenge)
-        return await self.app(scope, _replay(messages), send)
+        return await self.app(scope, _replay(messages, receive), send)
 
 
 async def _buffer_body(receive):
@@ -184,13 +184,20 @@ async def _buffer_body(receive):
     return body, messages
 
 
-def _replay(messages):
+def _replay(messages, original_receive):
+    """Replay the buffered request messages, then delegate to the real transport.
+
+    Falling back to ``original_receive`` (instead of emitting synthetic
+    ``http.request`` messages) is essential: the streamable-HTTP handler keeps
+    calling ``receive()`` after the body to detect client disconnect. Feeding it
+    fake messages makes it hang; delegating lets ``http.disconnect`` flow.
+    """
     queue = list(messages)
 
     async def receive():
         if queue:
             return queue.pop(0)
-        return {"type": "http.request", "body": b"", "more_body": False}
+        return await original_receive()
 
     return receive
 
