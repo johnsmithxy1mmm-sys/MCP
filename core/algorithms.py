@@ -16,6 +16,7 @@ live engine; the mock engine keeps curated fixtures. The edge math is shared.
 from __future__ import annotations
 
 import re
+from difflib import SequenceMatcher
 from typing import Callable
 
 from .models import (
@@ -106,35 +107,79 @@ def estimate_realizable_edge(
 
 
 # --- matching (real, computed) ----------------------------------------------
+# A lexical fuzzy matcher: normalize numbers/units/months + drop stopwords, then
+# combine token-set Jaccard, a difflib sequence ratio, and numeric agreement.
+# Fully offline. # TODO: swap in embedding similarity when a model is available.
 _STOPWORDS = {
-    "the", "will", "win", "above", "below", "and", "for", "usd", "at", "on",
-    "in", "close", "end", "dec", "jan", "eoy",
+    "the", "will", "win", "won", "above", "below", "over", "under", "and",
+    "for", "usd", "at", "on", "in", "of", "to", "by", "close", "closes",
+    "closing", "end", "eoy", "be", "a", "an", "is", "market", "price",
 }
+_MONTHS = {
+    "jan": "01", "january": "01", "feb": "02", "february": "02", "mar": "03",
+    "march": "03", "apr": "04", "april": "04", "may": "05", "jun": "06",
+    "june": "06", "jul": "07", "july": "07", "aug": "08", "august": "08",
+    "sep": "09", "sept": "09", "september": "09", "oct": "10", "october": "10",
+    "nov": "11", "november": "11", "dec": "12", "december": "12",
+}
+_NUM_RE = re.compile(r"\$?\s*(\d[\d,]*\.?\d*)\s*([kmb])?", re.IGNORECASE)
+
+
+def _canon_number(digits: str, suffix: str | None) -> str:
+    """'$100k' / '100,000' -> '100000'; '1.5m' -> '1500000'."""
+    try:
+        value = float(digits.replace(",", ""))
+    except ValueError:
+        return digits
+    mult = {"k": 1e3, "m": 1e6, "b": 1e9}.get((suffix or "").lower(), 1.0)
+    return str(int(round(value * mult)))
+
+
+def _normalize(text: str) -> str:
+    text = text.lower()
+    # Canonicalize numeric/currency spans first (so $100k == 100,000).
+    text = _NUM_RE.sub(lambda m: " " + _canon_number(m.group(1), m.group(2)) + " ", text)
+    # Month names -> numeric month.
+    words = re.findall(r"[a-z0-9]+", text)
+    return " ".join(_MONTHS.get(w, w) for w in words)
 
 
 def _tokens(text: str) -> set[str]:
-    # Word/number tokens only — strips $, commas, ?, etc. so "$100,000" and
-    # "2026?" normalize to comparable tokens.
     return {
-        t for t in re.findall(r"[a-z0-9]+", text.lower())
-        if len(t) > 2 and t not in _STOPWORDS
+        t for t in _normalize(text).split()
+        if (t.isdigit() or len(t) > 2) and t not in _STOPWORDS
     }
 
 
+def _numbers(text: str) -> set[str]:
+    return {t for t in _normalize(text).split() if t.isdigit() and len(t) >= 3}
+
+
 def title_similarity(a: str, b: str) -> float:
-    """Jaccard token similarity in [0, 1]. Cheap proxy for a real matcher."""
+    """Combined lexical similarity in [0, 1].
+
+    0.5 * token Jaccard + 0.35 * difflib sequence ratio + 0.15 * number overlap.
+    Number normalization means '$100k' and '$100,000' reinforce a match.
+    """
     ta, tb = _tokens(a), _tokens(b)
     if not ta or not tb:
         return 0.0
-    return len(ta & tb) / len(ta | tb)
+    jaccard = len(ta & tb) / len(ta | tb)
+    ratio = SequenceMatcher(None, _normalize(a), _normalize(b)).ratio()
+    na, nb = _numbers(a), _numbers(b)
+    num_overlap = (len(na & nb) / min(len(na), len(nb))) if (na and nb) else 0.0
+    return round(0.5 * jaccard + 0.35 * ratio + 0.15 * num_overlap, 3)
 
 
 def match_markets(
-    markets: list[Market], min_confidence: float = 0.35
+    markets: list[Market], min_confidence: float = 0.45
 ) -> list[MatchedPair]:
     """Pair markets from different venues that look like the same event.
 
-    # TODO: upgrade to embedding-based matching; token Jaccard is a placeholder.
+    The default threshold favors PRECISION: a false pair produces a fake
+    arbitrage opportunity, which is worse for trust than missing a real one.
+    Lexical matching can still be fooled by "shared entity + shared year"
+    titles. # TODO: embedding similarity resolves those; this is the lexical tier.
     """
     pairs: list[MatchedPair] = []
     for i, a in enumerate(markets):
