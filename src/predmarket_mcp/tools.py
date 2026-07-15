@@ -139,13 +139,15 @@ def register(mcp: FastMCP) -> None:
         description=(
             "Flagship scanner. Scans LIVE opportunities whose REALIZABLE EDGE (after "
             "fees, gas and slippage — never gross) exceeds `min_edge` (e.g. 0.02 = 2%). "
-            "Returns opportunities with realizable_edge, max_size_usd and legs. Realtime. "
+            "Detects cross_venue spreads, single-market bundles, and dutch_book "
+            "(combinatorial arb across mutually-exclusive outcomes). Each result is "
+            "risk-adjusted: holding_days, annualized_edge, resolution_risk. Realtime. "
             f"Costs {price_str('find_mispricing')} per call — check price before calling."
         ),
     )
     def find_mispricing(
         min_edge: Annotated[float, Field(ge=0, le=1, description="Minimum realizable edge, e.g. 0.02 for 2%.")],
-        kind: Annotated[Literal["bundle", "cross_venue"] | None, Field(description="Optional: only bundle or only cross_venue opportunities.")] = None,
+        kind: Annotated[Literal["bundle", "cross_venue", "dutch_book"] | None, Field(description="Optional: restrict to one opportunity kind.")] = None,
         category: Annotated[str | None, Field(description="Optional filter: politics, crypto, economics.")] = None,
     ) -> dict:
         ops = deps.scan_opportunities(min_edge, kind, category)
@@ -156,6 +158,9 @@ def register(mcp: FastMCP) -> None:
                     "title": o.title,
                     "category": o.category,
                     "realizable_edge": o.realizable_edge,
+                    "annualized_edge": o.annualized_edge,
+                    "holding_days": o.holding_days,
+                    "resolution_risk": o.resolution_risk,
                     "max_size_usd": o.max_size_usd,
                     "legs": [{"venue": l.venue.value, "market_id": l.market_id, "side": l.side.value} for l in o.legs],
                 }

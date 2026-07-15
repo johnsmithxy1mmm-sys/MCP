@@ -152,6 +152,13 @@ def scan_opportunities(
         )
     if kind in (None, "bundle"):
         out += algorithms.scan_bundle(markets, min_edge, category)
+    if kind in (None, "dutch_book"):
+        out += algorithms.scan_dutch_book(markets, min_edge, category)
+    # Risk-adjust (holding period + annualized edge) from each leg's close time.
+    close_by_id = {m.market_id: m.close_time for m in markets}
+    for o in out:
+        close_time = close_by_id.get(o.legs[0].market_id) if o.legs else None
+        algorithms.annotate_risk(o, close_time)
     out.sort(key=lambda o: o.realizable_edge, reverse=True)
     return out
 

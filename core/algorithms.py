@@ -35,23 +35,36 @@ from .models import (
 BookGetter = Callable[[str, str], "OrderbookSnapshot | None"]
 
 # Default cost model. The live engine can override per venue.
-DEFAULT_FEE_BPS = {Venue.POLYMARKET: 0.0, Venue.KALSHI: 0.07}
 DEFAULT_GAS_USD = {Venue.POLYMARKET: 0.35, Venue.KALSHI: 0.0}
+
+
+def venue_fee(venue: Venue, notional_usd: float, price: float) -> float:
+    """Calibrated per-venue trading fee on a fill.
+
+    Kalshi charges ~7% * contracts * price * (1 - price) per trade; with
+    contracts ~= notional / price this reduces to 0.07 * notional * (1 - price)
+    — a real, price-dependent cost (peaks at 50c, ~0 near the tails), unlike a
+    flat bps. Polymarket has no trading fee (cost is onchain gas, added
+    separately). # TODO: source live fee schedules per venue.
+    """
+    if venue == Venue.KALSHI:
+        return round(0.07 * notional_usd * (1.0 - price), 4)
+    return 0.0
 
 
 def estimate_realizable_edge(
     legs: list[Leg],
     size_usd: float,
     book_getter: BookGetter,
-    fee_bps: dict[Venue, float] | None = None,
+    fee_bps: dict[Venue, float] | None = None,  # kept for back-compat; unused
     gas_usd: dict[Venue, float] | None = None,
 ) -> ExecutionEstimate:
     """Simulate filling ``legs`` for ``size_usd`` against live depth.
 
-    Returns edge NET of fees + gas + slippage (never gross). Shared by the mock
-    and live engines — the only difference is where ``book_getter`` reads from.
+    Returns edge NET of fees + gas + slippage (never gross), plus a per-venue
+    cost breakdown. Shared by the mock and live engines — the only difference is
+    where ``book_getter`` reads from.
     """
-    fee_bps = fee_bps or DEFAULT_FEE_BPS
     gas_usd = gas_usd or DEFAULT_GAS_USD
 
     fillable = 0.0
@@ -60,6 +73,7 @@ def estimate_realizable_edge(
     gas = 0.0
     slippage = 0.0
     gross_price_ref = 0.0
+    breakdown: dict[str, dict[str, float]] = {}
 
     per_leg_budget = size_usd / max(1, len(legs))
     for leg in legs:
@@ -84,11 +98,17 @@ def estimate_realizable_edge(
         if filled_here <= 0:
             continue
         avg = cost / filled_here
+        leg_fee = venue_fee(leg.venue, filled_here, avg)
+        leg_gas = gas_usd.get(leg.venue, 0.0)
         weighted_price += avg * filled_here
         fillable += filled_here
         slippage += abs(avg - ref) * filled_here
-        gas += gas_usd.get(leg.venue, 0.0)
-        fees += filled_here * fee_bps.get(leg.venue, 0.0) * 0.1
+        gas += leg_gas
+        fees += leg_fee
+        v = breakdown.setdefault(leg.venue.value, {"fees_usd": 0.0, "gas_usd": 0.0, "filled_usd": 0.0})
+        v["fees_usd"] = round(v["fees_usd"] + leg_fee, 4)
+        v["gas_usd"] = round(v["gas_usd"] + leg_gas, 4)
+        v["filled_usd"] = round(v["filled_usd"] + filled_here, 2)
 
     avg_fill = (weighted_price / fillable) if fillable else 0.0
     gross_edge = round(len(legs) - gross_price_ref, 4) if gross_price_ref else 0.0
@@ -104,6 +124,7 @@ def estimate_realizable_edge(
         gas_usd=round(gas, 2),
         slippage_usd=round(slippage, 2),
         realizable_edge=realizable,
+        cost_breakdown=breakdown,
     )
 
 
@@ -315,3 +336,73 @@ def scan_bundle(
             ],
         ))
     return out
+
+
+def scan_dutch_book(
+    markets: list[Market],
+    min_edge: float,
+    category: str | None = None,
+    cost_haircut: float = 0.01,
+) -> list[Opportunity]:
+    """Combinatorial arbitrage over mutually-exclusive outcome groups.
+
+    Markets sharing an ``event_group`` are complementary outcomes whose YES
+    prices should sum to ~1. If the sum is meaningfully below 1, buy YES on every
+    outcome for a guaranteed payout > cost; if above 1, buy NO on every outcome.
+    This is where non-obvious edge lives and is hard to replicate.
+    """
+    groups: dict[str, list[Market]] = {}
+    for m in markets:
+        if not m.event_group:
+            continue
+        if category and (m.category or "") != category:
+            continue
+        groups.setdefault(m.event_group, []).append(m)
+
+    out: list[Opportunity] = []
+    for group, members in groups.items():
+        if len(members) < 2:
+            continue
+        total_yes = sum(m.yes_price for m in members)
+        # Under-round: buy every YES (pay total_yes, collect exactly 1).
+        # Over-round: buy every NO (pay len - total_yes, collect len - 1).
+        under = round((1.0 - total_yes) - cost_haircut, 4)
+        over = round((total_yes - 1.0) - cost_haircut, 4)
+        if under >= min_edge:
+            net, side = under, Side.YES
+        elif over >= min_edge:
+            net, side = over, Side.NO
+        else:
+            continue
+        cap = min((m.volume_usd or 0) for m in members) * 0.01
+        out.append(Opportunity(
+            kind=OpportunityKind.DUTCH_BOOK,
+            title=f"Dutch book across '{group}' ({len(members)} outcomes, "
+                  f"YES sum {round(total_yes, 3)})",
+            category=members[0].category,
+            realizable_edge=net,
+            max_size_usd=round(cap, 2),
+            legs=[Leg(venue=m.venue, market_id=m.market_id, side=side) for m in members],
+        ))
+    return out
+
+
+def annotate_risk(
+    opp: Opportunity,
+    close_time,
+    resolution_risk: float = 0.02,
+) -> Opportunity:
+    """Attach holding period, annualized edge, and a resolution-risk haircut.
+
+    An edge that locks capital until a distant resolution is worth less than the
+    same edge resolving next week — annualized return is the honest comparison.
+    """
+    from datetime import datetime, timezone
+
+    if close_time is not None:
+        now = datetime.now(timezone.utc)
+        days = max(0.5, (close_time - now).total_seconds() / 86400.0)
+        opp.holding_days = round(days, 2)
+        opp.annualized_edge = round(opp.realizable_edge / days * 365.0, 4)
+    opp.resolution_risk = resolution_risk
+    return opp

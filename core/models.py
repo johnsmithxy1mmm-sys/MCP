@@ -31,6 +31,7 @@ class Side(str, Enum):
 class OpportunityKind(str, Enum):
     BUNDLE = "bundle"
     CROSS_VENUE = "cross_venue"
+    DUTCH_BOOK = "dutch_book"  # mutually-exclusive outcomes priced != 1.0
 
 
 class Market(BaseModel):
@@ -44,6 +45,9 @@ class Market(BaseModel):
     no_price: float = Field(description="Normalized NO price in [0, 1].")
     volume_usd: float | None = None
     close_time: datetime | None = None
+    # Mutually-exclusive outcome group (e.g. "2028-president-party"); markets that
+    # share a group are complementary outcomes whose YES prices should sum to ~1.
+    event_group: str | None = None
 
     @property
     def implied_probability(self) -> float:
@@ -99,6 +103,19 @@ class Opportunity(BaseModel):
     )
     legs: list[Leg]
     detected_at: datetime = Field(default_factory=utcnow)
+    # --- risk adjustment (edge is only as good as the time/risk to realize it) ---
+    holding_days: float | None = Field(
+        default=None,
+        description="Days to market resolution — capital is locked until then.",
+    )
+    annualized_edge: float | None = Field(
+        default=None,
+        description="realizable_edge annualized over holding_days (edge / days * 365).",
+    )
+    resolution_risk: float | None = Field(
+        default=None,
+        description="0..1 haircut for resolution-source / settlement risk.",
+    )
 
 
 class MatchedPair(BaseModel):
@@ -127,6 +144,10 @@ class ExecutionEstimate(BaseModel):
     slippage_usd: float
     realizable_edge: float = Field(
         description="Net edge after fees + gas + slippage on the fillable size."
+    )
+    cost_breakdown: dict = Field(
+        default_factory=dict,
+        description="Per-venue fee/gas breakdown so the agent can see where cost went.",
     )
 
 

@@ -14,7 +14,7 @@ import hashlib
 import random
 from datetime import datetime, timedelta, timezone
 
-from .algorithms import estimate_realizable_edge
+from .algorithms import annotate_risk, estimate_realizable_edge, scan_dutch_book
 from .models import (
     ExecutionEstimate,
     Leg,
@@ -47,6 +47,19 @@ _MARKETS: list[Market] = [
         yes_price=0.52,
         no_price=0.48,
         volume_usd=4_820_000,
+        event_group="us-2028-president-party",
+        close_time=datetime(2028, 11, 7, tzinfo=timezone.utc),
+    ),
+    Market(
+        venue=Venue.POLYMARKET,
+        market_id="pm-us-election-2028-rep",
+        title="Will the Republican nominee win the 2028 US Presidential election?",
+        category="politics",
+        yes_price=0.45,
+        no_price=0.55,
+        volume_usd=4_610_000,
+        event_group="us-2028-president-party",  # dem+rep YES sum 0.97 -> Dutch book
+        close_time=datetime(2028, 11, 7, tzinfo=timezone.utc),
     ),
     Market(
         venue=Venue.KALSHI,
@@ -308,6 +321,15 @@ def scan_opportunities(
                 Leg(venue=m.venue, market_id=m.market_id, side=Side.NO),
             ],
         ))
+
+    # Dutch book: combinatorial arb across mutually-exclusive outcome groups.
+    out += scan_dutch_book(_MARKETS, min_edge, category)
+
+    # Risk-adjust every opportunity (holding period + annualized edge).
+    close_by_id = {m.market_id: m.close_time for m in _MARKETS}
+    for o in out:
+        close_time = close_by_id.get(o.legs[0].market_id) if o.legs else None
+        annotate_risk(o, close_time)
 
     if kind:
         out = [o for o in out if o.kind.value == kind]
