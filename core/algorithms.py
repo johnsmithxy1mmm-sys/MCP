@@ -15,6 +15,7 @@ live engine; the mock engine keeps curated fixtures. The edge math is shared.
 
 from __future__ import annotations
 
+import os
 import re
 from difflib import SequenceMatcher
 from typing import Callable
@@ -171,23 +172,76 @@ def title_similarity(a: str, b: str) -> float:
     return round(0.5 * jaccard + 0.35 * ratio + 0.15 * num_overlap, 3)
 
 
+def semantic_similarity(a: str, b: str) -> float | None:
+    """Cosine similarity of title embeddings, or None if no embedder is available.
+
+    Resolves the lexical tier's "shared entity + shared year" false positives
+    (e.g. 'Ethereum flips Bitcoin 2026' vs 'Bitcoin above 100k 2026'), which
+    share tokens but mean different events.
+    """
+    from .embeddings import cosine, get_embedder
+
+    embedder = get_embedder()
+    if embedder is None:
+        return None
+    if not a.strip() or not b.strip():
+        return 0.0
+    va, vb = embedder.embed([a, b])
+    return round(cosine(va, vb), 3)
+
+
+def similarity(a: str, b: str) -> float:
+    """Title similarity under the configured matcher tier.
+
+      MATCHER=lexical  (default) — token/difflib/number blend (offline)
+      MATCHER=semantic          — embedding cosine (falls back to lexical if the
+                                  embedder is unavailable)
+      MATCHER=hybrid            — 0.5 * lexical + 0.5 * semantic
+
+    Note: semantic cosine sits on a different scale than the lexical blend; tune
+    the match threshold via MATCH_MIN_CONFIDENCE when using semantic/hybrid.
+    """
+    mode = os.getenv("MATCHER", "lexical").lower()
+    lex = title_similarity(a, b)
+    if mode == "lexical":
+        return lex
+    sem = semantic_similarity(a, b)
+    if sem is None:
+        return lex  # embedder unavailable -> degrade to lexical
+    if mode == "semantic":
+        return sem
+    return round(0.5 * lex + 0.5 * sem, 3)  # hybrid
+
+
+def _default_min_confidence() -> float:
+    raw = os.getenv("MATCH_MIN_CONFIDENCE")
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+    return 0.45
+
+
 def match_markets(
-    markets: list[Market], min_confidence: float = 0.45
+    markets: list[Market], min_confidence: float | None = None
 ) -> list[MatchedPair]:
     """Pair markets from different venues that look like the same event.
 
-    The default threshold favors PRECISION: a false pair produces a fake
-    arbitrage opportunity, which is worse for trust than missing a real one.
-    Lexical matching can still be fooled by "shared entity + shared year"
-    titles. # TODO: embedding similarity resolves those; this is the lexical tier.
+    Uses the configured matcher tier (``similarity``). The default threshold
+    favors PRECISION: a false pair produces a fake arbitrage opportunity, which
+    is worse for trust than missing a real one. Override the threshold with
+    MATCH_MIN_CONFIDENCE (recommended when switching to semantic/hybrid, whose
+    cosine scores sit on a different scale than the lexical blend).
     """
+    threshold = _default_min_confidence() if min_confidence is None else min_confidence
     pairs: list[MatchedPair] = []
     for i, a in enumerate(markets):
         for b in markets[i + 1:]:
             if a.venue == b.venue:
                 continue
-            conf = round(title_similarity(a.title, b.title), 3)
-            if conf < min_confidence:
+            conf = round(similarity(a.title, b.title), 3)
+            if conf < threshold:
                 continue
             pairs.append(MatchedPair(event=a.title, confidence=conf, a=a, b=b))
     pairs.sort(key=lambda p: p.confidence, reverse=True)
@@ -198,7 +252,7 @@ def best_match(markets: list[Market], event: str, min_confidence: float = 0.2) -
     """Best cross-venue pair whose event text matches the query."""
     scored: list[tuple[float, MatchedPair]] = []
     for pair in match_markets(markets, min_confidence=min_confidence):
-        q = title_similarity(event, pair.a.title) + title_similarity(event, pair.b.title)
+        q = similarity(event, pair.a.title) + similarity(event, pair.b.title)
         if q > 0:
             scored.append((q * pair.confidence, pair))
     if not scored:

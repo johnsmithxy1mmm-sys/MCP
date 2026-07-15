@@ -131,6 +131,9 @@ API-key rail is wired via FastMCP helpers (`auth.py`), enabled by env.
 | `METERING_BACKEND` | `local` | `local` \| `stripe` \| `moesif`. |
 | `METERING_DB_URL` | `sqlite:///metering.db` | Usage/receipt store. |
 | `HISTORY_DB_URL` | `sqlite:///history.db` | Price-history store (live mode); Postgres/Timescale DSN for production. |
+| `MATCHER` | `lexical` | Cross-venue matcher tier: `lexical` (offline), `semantic` (embeddings), `hybrid`. |
+| `MATCH_MIN_CONFIDENCE` | `0.45` | Match threshold — tune when using `semantic`/`hybrid` (cosine is on a different scale). |
+| `EMBED_BACKEND` / `EMBED_MODEL` | `fastembed` / `BAAI/bge-small-en-v1.5` | Embedder for the semantic tier. |
 | `X402_OPERATOR_WALLET` | — | Payee address for x402. |
 | `X402_NETWORK` | `base-sepolia` | Settlement network. |
 | `X402_FACILITATOR_URL` | — | External facilitator (optional). |
@@ -164,11 +167,12 @@ src/predmarket_mcp/
 core/
   models.py     canonical pydantic models
   algorithms.py shared matcher / signals / realizable-edge (mock + live reuse)
+  embeddings.py Embedder backends for the semantic matcher tier (fastembed default)
   mock.py       realistic offline engine (default)
   live.py       live engine: adapters + algorithms, TTL-cached, history ingest
   storage.py    price-history store (SQLite default, Timescale/PG via env)
   adapters/     base.py · polymarket.py · kalshi.py (fetch + normalize only)
-tests/          test_tools.py · test_billing.py · test_adapters.py · test_storage.py · test_inspector.md
+tests/          test_tools · test_billing · test_adapters · test_storage · test_matcher · test_semantic_matcher · test_inspector.md
 ```
 
 ## Design principles honored

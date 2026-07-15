@@ -13,6 +13,9 @@ dependencies = [
 [project.optional-dependencies]
 # Postgres metering backend (production). SQLite (stdlib) is the zero-infra default.
 postgres = ["asyncpg>=0.29"]
+# Semantic matcher tier (MATCHER=semantic|hybrid). Local ONNX bge embeddings,
+# CPU-only, no torch. First use downloads weights from Hugging Face once.
+semantic = ["fastembed>=0.4"]
 
 [dependency-groups]
 dev = [
