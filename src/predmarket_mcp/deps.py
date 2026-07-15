@@ -72,6 +72,33 @@ def realizable_edge(legs: list[Leg], size_usd: float) -> ExecutionEstimate:
     return _engine.realizable_edge(legs, size_usd)
 
 
+# --- reconciliation / track record -----------------------------------------
+from core.reconciliation import get_reconciliation  # noqa: E402
+
+
+def record_flagged(opps: list[Opportunity]) -> None:
+    """Best-effort: record flagged opportunities for later reconciliation."""
+    store = get_reconciliation()
+    for opp in opps:
+        prices: dict[str, float] = {}
+        for leg in opp.legs:
+            m = get_market(leg.venue.value, leg.market_id)
+            if m is not None:
+                prices[leg.market_id] = m.yes_price
+        try:
+            store.record(opp, prices)
+        except Exception:
+            pass  # recording must never break the tool
+
+
+def track_record_metrics() -> dict:
+    return get_reconciliation().metrics()
+
+
+def resolve_outcomes(outcomes: dict[str, int]) -> int:
+    return get_reconciliation().resolve(outcomes)
+
+
 # --- Staleness helpers ------------------------------------------------------
 def now() -> datetime:
     return datetime.now(timezone.utc)

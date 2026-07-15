@@ -19,8 +19,9 @@ async def test_catalog_size(client):
         "get_market_history",
         "list_venues",
         "search_markets",
+        "track_record",
     ]
-    # Hard ceiling from the design principles: <= 15 tools.
+    # Hard ceiling from the design principles: <= 15 tools (target 10-12).
     assert len(names) <= 15
 
 

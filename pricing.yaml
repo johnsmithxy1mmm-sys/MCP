@@ -24,6 +24,9 @@ tools:
   evaluate_market:
     tier: free
     price_usd: 0
+  track_record:
+    tier: free
+    price_usd: 0
 
   # --- paid tier (per-call revenue) ---
   find_mispricing:

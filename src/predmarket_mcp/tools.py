@@ -22,6 +22,7 @@ from fastmcp import FastMCP
 from . import deps
 from .billing.tiers import load_pricing, price_str
 from .config import get_settings
+from .provenance import provenance
 from core.models import Leg, Side, Venue
 
 
@@ -96,6 +97,26 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.tool(
         tags={"free"},
+        meta=_paid_meta("track_record"),
+        description=(
+            "Verifiable track record for this server's calls. Reports how flagged "
+            "opportunities actually performed once their markets resolved: hit_rate, "
+            "mean predicted vs realized edge (edge_slippage), and a Brier score on the "
+            "implied probabilities surfaced (lower is better). Free — call this to "
+            "decide how much to trust find_mispricing before paying for it."
+        ),
+    )
+    def track_record() -> dict:
+        metrics = deps.track_record_metrics()
+        return {
+            "track_record": metrics,
+            "provenance": provenance(metrics),
+            **deps.staleness(deps.now()),
+            **_cost_note("track_record"),
+        }
+
+    @mcp.tool(
+        tags={"free"},
         meta=_paid_meta("evaluate_market"),
         description=(
             "Get normalized YES/NO prices, implied probability, and orderbook depth "
@@ -151,24 +172,27 @@ def register(mcp: FastMCP) -> None:
         category: Annotated[str | None, Field(description="Optional filter: politics, crypto, economics.")] = None,
     ) -> dict:
         ops = deps.scan_opportunities(min_edge, kind, category)
+        deps.record_flagged(ops)  # track record: flag now, reconcile at resolution
+        opportunities = [
+            {
+                "kind": o.kind.value,
+                "title": o.title,
+                "category": o.category,
+                "realizable_edge": o.realizable_edge,
+                "annualized_edge": o.annualized_edge,
+                "holding_days": o.holding_days,
+                "resolution_risk": o.resolution_risk,
+                "max_size_usd": o.max_size_usd,
+                "legs": [{"venue": l.venue.value, "market_id": l.market_id, "side": l.side.value} for l in o.legs],
+            }
+            for o in ops
+        ]
         return {
-            "opportunities": [
-                {
-                    "kind": o.kind.value,
-                    "title": o.title,
-                    "category": o.category,
-                    "realizable_edge": o.realizable_edge,
-                    "annualized_edge": o.annualized_edge,
-                    "holding_days": o.holding_days,
-                    "resolution_risk": o.resolution_risk,
-                    "max_size_usd": o.max_size_usd,
-                    "legs": [{"venue": l.venue.value, "market_id": l.market_id, "side": l.side.value} for l in o.legs],
-                }
-                for o in ops
-            ],
+            "opportunities": opportunities,
             "count": len(ops),
             "min_edge": min_edge,
             "realtime": True,
+            "provenance": provenance(opportunities),  # tamper-evident signature
             **deps.staleness(deps.now()),
             **_cost_note("find_mispricing"),
         }
