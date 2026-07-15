@@ -133,7 +133,8 @@ API-key rail is wired via FastMCP helpers (`auth.py`), enabled by env.
 | `HISTORY_DB_URL` | `sqlite:///history.db` | Price-history store (live mode); Postgres/Timescale DSN for production. |
 | `MATCHER` | `lexical` | Cross-venue matcher tier: `lexical` (offline), `semantic` (embeddings), `hybrid`. |
 | `MATCH_MIN_CONFIDENCE` | `0.45` | Match threshold — tune when using `semantic`/`hybrid` (cosine is on a different scale). |
-| `EMBED_BACKEND` / `EMBED_MODEL` | `fastembed` / `BAAI/bge-small-en-v1.5` | Embedder for the semantic tier. |
+| `EMBED_BACKEND` / `EMBED_MODEL` | `fastembed` / `BAAI/bge-small-en-v1.5` | Embedder for the semantic tier. `EMBED_BACKEND=voyage` uses a hosted embedder (no model in the image — serverless-friendly). |
+| `VOYAGE_API_KEY` | — | Required for `EMBED_BACKEND=voyage` (Voyage AI — Claude has no embeddings endpoint). |
 | `X402_OPERATOR_WALLET` | — | Payee address for x402. |
 | `X402_NETWORK` | `base-sepolia` | Settlement network. |
 | `X402_FACILITATOR_URL` | — | External facilitator (optional). |

@@ -42,6 +42,9 @@ def clean_metering():
                     conn.execute(f"DELETE FROM {table}")
                 except sqlite3.OperationalError:
                     pass
+    # Embedding vector cache must not leak between tests (different fake embedders).
+    from core import embeddings
+    embeddings.clear_cache()
     yield
 
 

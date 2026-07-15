@@ -179,15 +179,14 @@ def semantic_similarity(a: str, b: str) -> float | None:
     (e.g. 'Ethereum flips Bitcoin 2026' vs 'Bitcoin above 100k 2026'), which
     share tokens but mean different events.
     """
-    from .embeddings import cosine, get_embedder
+    from .embeddings import cosine, embed_texts
 
-    embedder = get_embedder()
-    if embedder is None:
-        return None
     if not a.strip() or not b.strip():
         return 0.0
-    va, vb = embedder.embed([a, b])
-    return round(cosine(va, vb), 3)
+    vectors = embed_texts([a, b])  # cached: each title embedded once
+    if vectors is None:
+        return None  # no embedder available
+    return round(cosine(vectors[0], vectors[1]), 3)
 
 
 def similarity(a: str, b: str) -> float:
