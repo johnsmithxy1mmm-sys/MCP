@@ -32,10 +32,10 @@ from .metering import UsageRecord, build_backend
 from .tiers import Pricing, load_pricing
 from .x402 import (
     Facilitator,
-    MockFacilitator,
     PaymentError,
     PaymentRequirement,
     ReceiptStore,
+    build_facilitator,
     decode_payment_header,
 )
 
@@ -51,7 +51,7 @@ class BillingContext:
         self.pricing: Pricing = load_pricing()
         self.metering = build_backend(settings)
         self.receipts = ReceiptStore(settings.metering_db_url)
-        self.facilitator: Facilitator = MockFacilitator(settings)
+        self.facilitator: Facilitator = build_facilitator(settings)
 
     # -- gating helpers ----------------------------------------------------
     def gate_active(self) -> bool:

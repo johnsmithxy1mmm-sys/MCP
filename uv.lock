@@ -1161,6 +1161,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+kalshi = [
+    { name = "cryptography" },
+]
 postgres = [
     { name = "asyncpg" },
 ]
@@ -1170,6 +1173,7 @@ semantic = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "cryptography" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
 ]
@@ -1177,15 +1181,17 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "asyncpg", marker = "extra == 'postgres'", specifier = ">=0.29" },
+    { name = "cryptography", marker = "extra == 'kalshi'", specifier = ">=42" },
     { name = "fastembed", marker = "extra == 'semantic'", specifier = ">=0.4" },
     { name = "fastmcp", specifier = ">=2.3.0" },
     { name = "pydantic", specifier = ">=2.6" },
     { name = "pyyaml", specifier = ">=6.0" },
 ]
-provides-extras = ["postgres", "semantic"]
+provides-extras = ["postgres", "semantic", "kalshi"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "cryptography", specifier = ">=42" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-asyncio", specifier = ">=0.23" },
 ]

@@ -16,11 +16,14 @@ postgres = ["asyncpg>=0.29"]
 # Semantic matcher tier (MATCHER=semantic|hybrid). Local ONNX bge embeddings,
 # CPU-only, no torch. First use downloads weights from Hugging Face once.
 semantic = ["fastembed>=0.4"]
+# Live Kalshi private endpoints (orderbook) need RSA-PSS request signing.
+kalshi = ["cryptography>=42"]
 
 [dependency-groups]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "cryptography>=42",  # for Kalshi signing tests
 ]
 
 [build-system]

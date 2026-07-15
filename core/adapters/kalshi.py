@@ -4,19 +4,28 @@ Data source: https://api.elections.kalshi.com/trade-api/v2
 * GET /markets                      — market metadata + best bid/ask (in cents)
 * GET /markets/{ticker}/orderbook   — depth (price in cents, size in contracts)
 
-Kalshi prices are integer cents (0..100); we normalize to 0..1. Read endpoints
-are largely public; if KALSHI_API_KEY is set it's sent as a bearer token.
+Kalshi prices are integer cents (0..100); we normalize to 0..1. The markets list
+is public; private endpoints (orderbook) require RSA-PSS request signing:
+
+  KALSHI_API_KEY_ID        access key id
+  KALSHI_PRIVATE_KEY       RSA private key PEM (or KALSHI_PRIVATE_KEY_PATH)
+
+If those aren't set, a legacy KALSHI_API_KEY bearer token is used as a fallback.
 """
 
 from __future__ import annotations
 
+import base64
 import os
+import time
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 from ..models import Market, OrderbookLevel, OrderbookSnapshot, Venue
 from .base import VenueAdapter, _matches_query, fetch_json
 
 KALSHI_URL = os.getenv("KALSHI_API_URL", "https://api.elections.kalshi.com/trade-api/v2")
+_BASE_PATH = urlparse(KALSHI_URL).path.rstrip("/")  # e.g. /trade-api/v2
 
 
 def _cents_to_prob(cents) -> float:
@@ -26,9 +35,49 @@ def _cents_to_prob(cents) -> float:
         return 0.0
 
 
-def _auth_headers() -> dict:
-    key = os.getenv("KALSHI_API_KEY")
-    return {"Authorization": f"Bearer {key}"} if key else {}
+def _load_private_key():
+    """Load the RSA private key from env (PEM string or path), or None."""
+    pem = os.getenv("KALSHI_PRIVATE_KEY")
+    if not pem:
+        path = os.getenv("KALSHI_PRIVATE_KEY_PATH")
+        if path and os.path.exists(path):
+            pem = open(path).read()
+    if not pem:
+        return None
+    try:
+        from cryptography.hazmat.primitives.serialization import load_pem_private_key
+
+        return load_pem_private_key(pem.encode(), password=None)
+    except Exception:
+        return None  # cryptography missing or bad key -> fall back
+
+
+def _auth_headers(method: str, rel_path: str) -> dict:
+    """Signed Kalshi headers for `method` + the request path.
+
+    Kalshi signs `timestamp_ms + METHOD + full_path` with RSA-PSS/SHA-256.
+    Falls back to a legacy bearer token, then to no auth (public endpoints).
+    """
+    key_id = os.getenv("KALSHI_API_KEY_ID")
+    private_key = _load_private_key()
+    if key_id and private_key is not None:
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import padding
+
+        ts = str(int(time.time() * 1000))
+        message = ts + method.upper() + _BASE_PATH + rel_path
+        signature = private_key.sign(
+            message.encode(),
+            padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.DIGEST_LENGTH),
+            hashes.SHA256(),
+        )
+        return {
+            "KALSHI-ACCESS-KEY": key_id,
+            "KALSHI-ACCESS-SIGNATURE": base64.b64encode(signature).decode(),
+            "KALSHI-ACCESS-TIMESTAMP": ts,
+        }
+    legacy = os.getenv("KALSHI_API_KEY")
+    return {"Authorization": f"Bearer {legacy}"} if legacy else {}
 
 
 class KalshiAdapter(VenueAdapter):
@@ -38,7 +87,7 @@ class KalshiAdapter(VenueAdapter):
         data = fetch_json(
             KALSHI_URL, "/markets",
             params={"limit": limit, "status": "open"},
-            headers=_auth_headers(), venue="Kalshi",
+            headers=_auth_headers("GET", "/markets"), venue="Kalshi",
         )
         rows = (data or {}).get("markets", [])
         markets: list[Market] = []
@@ -73,9 +122,10 @@ class KalshiAdapter(VenueAdapter):
         )
 
     def fetch_orderbook(self, market_id: str) -> OrderbookSnapshot | None:
+        path = f"/markets/{market_id}/orderbook"
         data = fetch_json(
-            KALSHI_URL, f"/markets/{market_id}/orderbook",
-            headers=_auth_headers(), venue="Kalshi",
+            KALSHI_URL, path,
+            headers=_auth_headers("GET", path), venue="Kalshi",
         )
         book = (data or {}).get("orderbook", {}) or {}
         # Kalshi returns YES bids under "yes" and NO bids under "no"; a YES ask is

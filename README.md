@@ -143,7 +143,8 @@ API-key rail is wired via FastMCP helpers (`auth.py`), enabled by env.
 | `SIGNING_KEY` | — | Operator secret; when set, responses carry an HMAC-SHA256 `provenance` signature. |
 | `X402_OPERATOR_WALLET` | — | Payee address for x402. |
 | `X402_NETWORK` | `base-sepolia` | Settlement network. |
-| `X402_FACILITATOR_URL` | — | External facilitator (optional). |
+| `X402_FACILITATOR_URL` | — | **Set to enable real settlement**: a Coinbase/self-hosted x402 facilitator (`/verify` + `/settle`). Unset → the structural MockFacilitator. |
+| `KALSHI_API_KEY_ID` / `KALSHI_PRIVATE_KEY` (or `_PATH`) | — | Live Kalshi private endpoints (orderbook) — RSA-PSS request signing. |
 | `AUTH_JWKS_URI` / `AUTH_ISSUER` / `AUTH_AUDIENCE` | — | OAuth 2.1 fallback. |
 | `HOST` / `PORT` | `0.0.0.0` / `8000` | Bind address. |
 
@@ -152,12 +153,19 @@ API-key rail is wired via FastMCP helpers (`auth.py`), enabled by env.
 ```bash
 docker build -t predmarket-mcp .
 docker run -p 8000:8000 -e PAID_ENABLED=false predmarket-mcp
+
+# with optional features baked in (extras + pre-downloaded embedding weights):
+docker build -t predmarket-mcp \
+  --build-arg EXTRAS="--extra semantic --extra kalshi --extra postgres" \
+  --build-arg WITH_SEMANTIC=true .
 ```
 
 Runs on Cloud Run / Container Apps / any container host. Streamable HTTP is
 serverless-compatible. Terminate TLS and rate-limit at the proxy; use `/health`
 for liveness. The container starts via `python -m predmarket_mcp.server` so the
 x402 ASGI middleware is wired in (equivalent to `fastmcp run` + payment gating).
+`WITH_SEMANTIC=true` pre-fetches the bge-small weights into the image so the
+semantic matcher runs with no Hugging Face egress at runtime.
 
 ## Layout
 

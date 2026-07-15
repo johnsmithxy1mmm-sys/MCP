@@ -146,6 +146,88 @@ class MockFacilitator(Facilitator):
         )
 
 
+def _payment_requirements(requirement: PaymentRequirement) -> dict:
+    """x402 paymentRequirements object for the facilitator protocol."""
+    return {
+        "scheme": requirement.scheme,
+        "network": requirement.network,
+        "maxAmountRequired": str(_to_atomic(requirement.price_usd)),
+        "resource": requirement.tool_name,
+        "description": f"predmarket-mcp tool '{requirement.tool_name}'",
+        "payTo": requirement.pay_to,
+        "asset": requirement.currency,
+        "maxTimeoutSeconds": 60,
+    }
+
+
+class HttpFacilitator(Facilitator):
+    """Real facilitator: verifies + settles a signed x402 payment over HTTP.
+
+    Talks the x402 facilitator protocol (`POST /verify`, `POST /settle`) to a
+    Coinbase / self-hosted facilitator that recovers the EIP-712 signature and
+    submits the USDC transfer on-chain, returning a settlement tx hash. Point it
+    at a facilitator with X402_FACILITATOR_URL. The HTTP client is injectable so
+    tests can mock the transport.
+    """
+
+    def __init__(self, base_url: str, client_factory=None):
+        self.base_url = base_url.rstrip("/")
+        self._client_factory = client_factory or self._default_client
+
+    def _default_client(self):
+        import httpx
+
+        return httpx.Client(base_url=self.base_url, timeout=20.0)
+
+    def _post(self, path: str, body: dict) -> dict:
+        import httpx
+
+        try:
+            with self._client_factory() as client:
+                resp = client.post(path, json=body)
+        except httpx.HTTPError as exc:
+            raise PaymentError(f"facilitator {path} failed: {type(exc).__name__}") from exc
+        if resp.status_code != 200:
+            raise PaymentError(f"facilitator {path} HTTP {resp.status_code}: {resp.text[:120]}")
+        try:
+            return resp.json()
+        except ValueError as exc:
+            raise PaymentError(f"facilitator {path} returned non-JSON") from exc
+
+    def verify_and_settle(self, payment: dict, requirement: PaymentRequirement) -> Receipt:
+        body = {
+            "x402Version": 1,
+            "paymentPayload": payment,
+            "paymentRequirements": _payment_requirements(requirement),
+        }
+        verified = self._post("/verify", body)
+        if not verified.get("isValid", False):
+            raise PaymentError(f"facilitator rejected: {verified.get('invalidReason', 'invalid')}")
+        settled = self._post("/settle", body)
+        if not settled.get("success", False):
+            raise PaymentError(f"settlement failed: {settled.get('errorReason', 'unknown')}")
+        tx_hash = settled.get("transaction") or settled.get("txHash")
+        auth = (payment.get("payload") or {}).get("authorization") or {}
+        return Receipt(
+            receipt_id=str(uuid.uuid4()),
+            tool_name=requirement.tool_name,
+            amount_usd=requirement.price_usd,
+            currency=requirement.currency,
+            network=requirement.network,
+            payer=settled.get("payer") or auth.get("from"),
+            pay_to=auth.get("to") or requirement.pay_to,
+            tx_hash=tx_hash,
+        )
+
+
+def build_facilitator(settings) -> Facilitator:
+    """Real facilitator when X402_FACILITATOR_URL is set; mock otherwise."""
+    url = getattr(settings, "x402_facilitator_url", None)
+    if url:
+        return HttpFacilitator(url)
+    return MockFacilitator(settings)
+
+
 def decode_payment_header(header_value: str) -> dict:
     """Decode an X-PAYMENT header (base64-encoded JSON) into a dict."""
     try:
