@@ -51,6 +51,17 @@ def _cost_note(tool_name: str) -> dict:
     return {"tier": p.tier, "price_usd": p.price_usd}
 
 
+def _client_id() -> str:
+    """Stable-per-caller id for watches/alerts, from HTTP headers (else anon)."""
+    try:
+        from fastmcp.server.dependencies import get_http_headers
+
+        headers = get_http_headers(include_all=True) or {}
+    except Exception:
+        headers = {}
+    return headers.get("x-client-id") or headers.get("authorization") or "anonymous"
+
+
 def register(mcp: FastMCP) -> None:
     settings = get_settings()
 
@@ -278,6 +289,45 @@ def register(mcp: FastMCP) -> None:
             "count": len(points),
             **deps.staleness(deps.now()),
             **_cost_note("get_market_history"),
+        }
+
+    @mcp.tool(
+        tags={"paid"},
+        meta=_paid_meta("watch"),
+        description=(
+            "Subscribe to opportunities instead of polling for them. Registers a watch "
+            "for opportunities whose realizable_edge crosses `min_edge` (optionally "
+            "filtered by kind/category/event). Returns a watch_id and any immediate "
+            "matches; retrieve later ones with poll_alerts. "
+            f"Costs {price_str('watch')} per subscription."
+        ),
+    )
+    def watch(
+        min_edge: Annotated[float, Field(ge=0, le=1, description="Alert when realizable edge crosses this, e.g. 0.02.")],
+        kind: Annotated[Literal["bundle", "cross_venue", "dutch_book"] | None, Field(description="Optional: only this opportunity kind.")] = None,
+        category: Annotated[str | None, Field(description="Optional filter: politics, crypto, economics.")] = None,
+        event: Annotated[str | None, Field(description="Optional: only opportunities whose title contains this text.")] = None,
+    ) -> dict:
+        result = deps.create_watch(_client_id(), min_edge, category, kind, event)
+        return {**result, "realtime": True, **deps.staleness(deps.now()), **_cost_note("watch")}
+
+    @mcp.tool(
+        tags={"paid"},
+        meta=_paid_meta("poll_alerts"),
+        description=(
+            "Retrieve opportunities that fired against your watches since you last "
+            "polled (each alert delivered once). Cheap — poll on your own cadence "
+            f"instead of re-running the scanner. Costs {price_str('poll_alerts')} per call."
+        ),
+    )
+    def poll_alerts() -> dict:
+        alerts = deps.poll_alerts(_client_id())
+        return {
+            "alerts": alerts,
+            "count": len(alerts),
+            "realtime": True,
+            **deps.staleness(deps.now()),
+            **_cost_note("poll_alerts"),
         }
 
 

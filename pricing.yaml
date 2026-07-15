@@ -41,3 +41,9 @@ tools:
   get_market_history:
     tier: paid
     price_usd: 0.01
+  watch:
+    tier: paid
+    price_usd: 0.02
+  poll_alerts:
+    tier: paid
+    price_usd: 0.005

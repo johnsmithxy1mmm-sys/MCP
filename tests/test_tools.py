@@ -18,8 +18,10 @@ async def test_catalog_size(client):
         "find_mispricing",
         "get_market_history",
         "list_venues",
+        "poll_alerts",
         "search_markets",
         "track_record",
+        "watch",
     ]
     # Hard ceiling from the design principles: <= 15 tools (target 10-12).
     assert len(names) <= 15

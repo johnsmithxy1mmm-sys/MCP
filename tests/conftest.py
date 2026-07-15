@@ -16,8 +16,10 @@ import pytest
 # Isolate metering to a temp DB before any predmarket import.
 _TMP_DB = Path(tempfile.gettempdir()) / "predmarket_test_metering.db"
 _TMP_RECON = Path(tempfile.gettempdir()) / "predmarket_test_recon.db"
+_TMP_WATCH = Path(tempfile.gettempdir()) / "predmarket_test_watch.db"
 os.environ.setdefault("METERING_DB_URL", f"sqlite:///{_TMP_DB}")
 os.environ.setdefault("RECON_DB_URL", f"sqlite:///{_TMP_RECON}")
+os.environ.setdefault("WATCH_DB_URL", f"sqlite:///{_TMP_WATCH}")
 os.environ.setdefault("PAID_ENABLED", "false")
 
 import pytest_asyncio  # noqa: E402
@@ -50,6 +52,13 @@ def clean_metering():
                 conn.execute("DELETE FROM flagged")
             except sqlite3.OperationalError:
                 pass
+    if _TMP_WATCH.exists():
+        with sqlite3.connect(_TMP_WATCH) as conn:
+            for table in ("watches", "alerts"):
+                try:
+                    conn.execute(f"DELETE FROM {table}")
+                except sqlite3.OperationalError:
+                    pass
     # Embedding vector cache must not leak between tests (different fake embedders).
     from core import embeddings
     embeddings.clear_cache()

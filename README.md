@@ -27,20 +27,23 @@ Descriptions are the agent's only documentation, so they're written as copy.
 Every response carries freshness (`as_of` / `data_age_seconds`) and cost
 (`tier` / `price_usd`).
 
-### Free tier (discovery — the funnel)
+### Free tier (discovery + trust — the funnel)
 | Tool | What it answers |
 |---|---|
 | `search_markets(query, category?, venue?)` | Discover markets by keyword. |
 | `list_venues()` | Which venues exist, their status and coverage. |
+| `track_record()` | **Verifiable performance** — how flagged opportunities actually did at resolution (hit-rate, edge slippage, Brier). The reason to trust the paid tools. |
 | `evaluate_market(venue, market_id)` | Prices, implied prob, depth for one market. **Data delayed ~60s** on the free tier. |
 
 ### Paid tier (per-call revenue — realtime)
 | Tool | What it answers | Price/call |
 |---|---|---|
-| `find_mispricing(min_edge, kind?, category?)` | Flagship. Live opportunities above a **realizable** edge threshold. | $0.05 |
+| `find_mispricing(min_edge, kind?, category?)` | Flagship. Live **cross_venue / bundle / dutch_book** opportunities above a **realizable** edge threshold; each risk-adjusted (annualized edge, holding days). Signed. | $0.05 |
 | `compare_across_venues(event)` | Same event across venues: spread, direction, match confidence. | $0.02 |
-| `estimate_execution(legs, size_usd)` | Realizable edge **at your size** from current depth, before you act. | $0.01 |
+| `estimate_execution(legs, size_usd)` | Realizable edge **at your size** from current depth, with per-venue cost breakdown. | $0.01 |
 | `get_market_history(venue, market_id, from_ts, to_ts)` | Historical price/spread series. | $0.01 |
+| `watch(min_edge, kind?, category?, event?)` | **Subscribe** to opportunities instead of polling — register once, get alerts. | $0.02 |
+| `poll_alerts()` | Retrieve opportunities that fired against your watches (delivered once). | $0.005 |
 
 Prices live in [`pricing.yaml`](./pricing.yaml), never hardcoded.
 
@@ -135,6 +138,9 @@ API-key rail is wired via FastMCP helpers (`auth.py`), enabled by env.
 | `MATCH_MIN_CONFIDENCE` | `0.45` | Match threshold — tune when using `semantic`/`hybrid` (cosine is on a different scale). |
 | `EMBED_BACKEND` / `EMBED_MODEL` | `fastembed` / `BAAI/bge-small-en-v1.5` | Embedder for the semantic tier. `EMBED_BACKEND=voyage` uses a hosted embedder (no model in the image — serverless-friendly). |
 | `VOYAGE_API_KEY` | — | Required for `EMBED_BACKEND=voyage` (Voyage AI — Claude has no embeddings endpoint). |
+| `RECON_DB_URL` | `sqlite:///reconciliation.db` | Track-record store (flagged → resolved → realized). |
+| `WATCH_DB_URL` | `sqlite:///watches.db` | Watch/alert subscription store. |
+| `SIGNING_KEY` | — | Operator secret; when set, responses carry an HMAC-SHA256 `provenance` signature. |
 | `X402_OPERATOR_WALLET` | — | Payee address for x402. |
 | `X402_NETWORK` | `base-sepolia` | Settlement network. |
 | `X402_FACILITATOR_URL` | — | External facilitator (optional). |
@@ -163,6 +169,7 @@ src/predmarket_mcp/
   prompts.py    arbitrage_scan_workflow
   config.py     env-driven settings (PAID_ENABLED flag)
   deps.py       the ONLY seam into core/
+  provenance.py signed (HMAC) provenance block for responses
   auth.py       OAuth 2.1 fallback wiring
   billing/      tiers.py · metering.py · x402.py · middleware.py
 core/
@@ -172,6 +179,8 @@ core/
   mock.py       realistic offline engine (default)
   live.py       live engine: adapters + algorithms, TTL-cached, history ingest
   storage.py    price-history store (SQLite default, Timescale/PG via env)
+  reconciliation.py  flag → resolve → realized-edge / hit-rate / Brier (track record)
+  watches.py    watch/alert subscription store (push computed, pull drained)
   adapters/     base.py · polymarket.py · kalshi.py (fetch + normalize only)
 tests/          test_tools · test_billing · test_adapters · test_storage · test_matcher · test_semantic_matcher · test_inspector.md
 ```

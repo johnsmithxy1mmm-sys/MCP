@@ -99,6 +99,30 @@ def resolve_outcomes(outcomes: dict[str, int]) -> int:
     return get_reconciliation().resolve(outcomes)
 
 
+# --- watches / alerts (push subscription model) ----------------------------
+from core.watches import get_watches  # noqa: E402
+
+
+def create_watch(client_id, min_edge, category=None, kind=None, event=None) -> dict:
+    """Register a watch, run an immediate scan, return id + any instant matches."""
+    store = get_watches()
+    watch_id = store.create_watch(client_id, min_edge, category, kind, event)
+    store.fire(scan_opportunities(0.0, None, None))  # evaluate against current opps
+    immediate = [a for a in store.drain(client_id) if a["watch_id"] == watch_id]
+    return {"watch_id": watch_id, "immediate_matches": immediate}
+
+
+def poll_alerts(client_id) -> list[dict]:
+    """Re-scan (push side), then drain this client's queued alerts (pull side)."""
+    store = get_watches()
+    store.fire(scan_opportunities(0.0, None, None))
+    return store.drain(client_id)
+
+
+def list_watches(client_id) -> list[dict]:
+    return get_watches().list_watches(client_id)
+
+
 # --- Staleness helpers ------------------------------------------------------
 def now() -> datetime:
     return datetime.now(timezone.utc)
