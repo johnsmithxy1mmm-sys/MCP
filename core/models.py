@@ -33,6 +33,7 @@ class OpportunityKind(str, Enum):
     BUNDLE = "bundle"
     CROSS_VENUE = "cross_venue"
     DUTCH_BOOK = "dutch_book"  # mutually-exclusive outcomes priced != 1.0
+    ENTAILMENT = "entailment"  # logical-implication / term-structure violation
 
 
 class Market(BaseModel):

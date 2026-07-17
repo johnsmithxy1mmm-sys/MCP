@@ -212,15 +212,17 @@ def register(mcp: FastMCP) -> None:
         description=(
             "Flagship scanner. Scans LIVE opportunities whose REALIZABLE EDGE (after "
             "fees, gas and slippage — never gross) exceeds `min_edge` (e.g. 0.02 = 2%). "
-            "Detects cross_venue spreads, single-market bundles, and dutch_book "
-            "(combinatorial arb across mutually-exclusive outcomes). Each result is "
-            "risk-adjusted: holding_days, annualized_edge, resolution_risk. Realtime. "
+            "Detects cross_venue spreads, single-market bundles, dutch_book "
+            "(combinatorial arb across mutually-exclusive outcomes), and entailment "
+            "(risk-free logical-implication / probability term-structure violations — "
+            "e.g. P(BTC>150k) priced above P(BTC>100k)). Each result is risk-adjusted: "
+            "holding_days, annualized_edge, resolution_risk. Realtime. "
             f"Costs {price_str('find_mispricing')} per call — check price before calling."
         ),
     )
     def find_mispricing(
         min_edge: Annotated[float, Field(ge=0, le=1, description="Minimum realizable edge, e.g. 0.02 for 2%.")],
-        kind: Annotated[Literal["bundle", "cross_venue", "dutch_book"] | None, Field(description="Optional: restrict to one opportunity kind.")] = None,
+        kind: Annotated[Literal["bundle", "cross_venue", "dutch_book", "entailment"] | None, Field(description="Optional: restrict to one opportunity kind.")] = None,
         category: Annotated[str | None, Field(description="Optional filter: politics, crypto, economics.")] = None,
     ) -> dict:
         ops = deps.scan_opportunities(min_edge, kind, category)

@@ -15,6 +15,7 @@ import random
 from datetime import datetime, timedelta, timezone
 
 from .algorithms import estimate_realizable_edge, finalize_opportunities, scan_dutch_book
+from .entailment import scan_entailment
 from .fairvalue import consensus
 from .models import (
     ExecutionEstimate,
@@ -326,6 +327,10 @@ def scan_opportunities(
 
     # Dutch book: combinatorial arb across mutually-exclusive outcome groups.
     out += scan_dutch_book(_MARKETS, min_edge, category)
+
+    # Entailment: logical-implication + term-structure violations (risk-free).
+    cat_markets = [m for m in _MARKETS if not category or (m.category or "") == category]
+    out += scan_entailment(cat_markets, min_edge)
 
     if kind:
         out = [o for o in out if o.kind.value == kind]

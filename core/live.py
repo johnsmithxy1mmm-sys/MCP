@@ -194,7 +194,12 @@ def scan_opportunities(
         out += algorithms.scan_bundle(markets, min_edge, category)
     if kind in (None, "dutch_book"):
         out += algorithms.scan_dutch_book(markets, min_edge, category)
-    # Risk-adjust (earliest close across all legs) + cap size by live book depth.
+    if kind in (None, "entailment"):
+        from .entailment import scan_entailment
+
+        cat_markets = [m for m in markets if not category or (m.category or "") == category]
+        out += scan_entailment(cat_markets, min_edge)
+    # Risk-adjust (latest close across all legs) + cap size by live book depth.
     return algorithms.finalize_opportunities(out, markets, repo.get_orderbook)
 
 
