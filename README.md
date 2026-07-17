@@ -21,7 +21,7 @@ trades or holds funds.
 > The shared intelligence (matcher, signals, realizable-edge) lives in
 > `core/algorithms.py` and is used by **both** engines — not duplicated.
 
-## Tool catalog (7 tools, 1 resource, 1 prompt)
+## Tool catalog (10 tools, 2 resources, 1 prompt)
 
 Descriptions are the agent's only documentation, so they're written as copy.
 Every response carries freshness (`as_of` / `data_age_seconds`) and cost
@@ -141,12 +141,26 @@ API-key rail is wired via FastMCP helpers (`auth.py`), enabled by env.
 | `RECON_DB_URL` | `sqlite:///reconciliation.db` | Track-record store (flagged → resolved → realized). |
 | `WATCH_DB_URL` | `sqlite:///watches.db` | Watch/alert subscription store. |
 | `SIGNING_KEY` | — | Operator secret; when set, responses carry an HMAC-SHA256 `provenance` signature. |
+| `SIGNING_KEY_ED25519` | — | 32-byte Ed25519 seed (hex/base64). Preferred over HMAC — asymmetric signatures anyone can verify against the public key at `GET /pubkey`. |
 | `X402_OPERATOR_WALLET` | — | Payee address for x402. |
 | `X402_NETWORK` | `base-sepolia` | Settlement network. |
 | `X402_FACILITATOR_URL` | — | **Set to enable real settlement**: a Coinbase/self-hosted x402 facilitator (`/verify` + `/settle`). Unset → the structural MockFacilitator. |
 | `KALSHI_API_KEY_ID` / `KALSHI_PRIVATE_KEY` (or `_PATH`) | — | Live Kalshi private endpoints (orderbook) — RSA-PSS request signing. |
 | `AUTH_JWKS_URI` / `AUTH_ISSUER` / `AUTH_AUDIENCE` | — | OAuth 2.1 fallback. |
 | `HOST` / `PORT` | `0.0.0.0` / `8000` | Bind address. |
+| **v2 — Provable Alpha Rails** | | *(all off/degrading by default)* |
+| `STREAMING` | `off` | Real-time WSS ingestion of venue price ticks into the history store. Degrades to the TTL-fetch path if unset / no `websockets` / dropped connection. |
+| `ALERT_ENGINE` / `ALERT_ENGINE_INTERVAL` | `off` / `30` | Background thread that fires watches off the hot path; `poll_alerts` becomes drain-only. Off → firing happens inline (synchronous, serverless-safe). |
+| `ALERT_WEBHOOK_URL` / `ALERT_WEBHOOK_SECRET` | — | Push fired alerts to a webhook (best-effort; alert stays queued for `poll_alerts` on failure). |
+| `WATCH_MAX_PER_CLIENT` | `50` | Per-client active-watch cap. |
+| `ANALYST_ENABLED` / `ANTHROPIC_API_KEY` | `off` / — | LLM resolution-risk analyst (Claude `claude-opus-4-8`, structured tool output, adaptive thinking). Off/no-key → offline heuristic. `ANALYST_MODEL`, `ANALYST_MAX_ENRICH` (`3`) tune it. |
+| `KELLY_FRACTION` | `0.5` | Fractional-Kelly multiplier for `estimate_execution` sizing (half-Kelly). |
+| `FAIRVALUE_MIN_LIQUIDITY_USD` | `1.0` | Liquidity floor for the cross-venue consensus weighting. |
+| `MANIFOLD_ENABLED` | `off` | Add Manifold as a third market/consensus venue (live engine). |
+| `RATE_LIMIT_RPM` / `RATE_LIMIT_BURST` | `0` / `=RPM` | Per-client token-bucket rate limit (429 on exceed). `0` = disabled. |
+| `CIRCUIT_FAIL_MAX` / `CIRCUIT_RESET_TIMEOUT` | `5` / `30` | Per-venue circuit breaker: open after N failures, half-open probe after cooldown. |
+| `HISTORY_RETENTION_DAYS` | `90` | Prune history older than this (throttled). `0` = keep everything. |
+| `LOG_FORMAT` / `LOG_LEVEL` | `text` / `INFO` | `LOG_FORMAT=json` for structured logs. |
 
 ## Deploy
 
@@ -171,26 +185,33 @@ semantic matcher runs with no Hugging Face egress at runtime.
 
 ```
 src/predmarket_mcp/
-  server.py     FastMCP app, /health, registration, HTTP app + middleware
-  tools.py      the 7 tools (call core/, format for agents — no logic here)
-  resources.py  market:// resource
+  server.py     FastMCP app; /health, /metrics, /pubkey, /track-record; HTTP app + middleware
+  tools.py      the 10 tools (call core/, format for agents — no logic here)
+  resources.py  market:// + alerts:// resources
   prompts.py    arbitrage_scan_workflow
   config.py     env-driven settings (PAID_ENABLED flag)
   deps.py       the ONLY seam into core/
-  provenance.py signed (HMAC) provenance block for responses
+  provenance.py signed provenance (Ed25519 preferred, HMAC fallback)
+  ops.py        metrics registry, token-bucket rate limit, structured logging
   auth.py       OAuth 2.1 fallback wiring
   billing/      tiers.py · metering.py · x402.py · middleware.py
 core/
   models.py     canonical pydantic models
-  algorithms.py shared matcher / signals / realizable-edge (mock + live reuse)
+  algorithms.py shared matcher / signals / realizable-edge + risk finalize (mock + live reuse)
+  fairvalue.py  liquidity-weighted cross-venue consensus + deviation (B3)
+  sizing.py     fractional-Kelly stake + market-impact curve (B4)
+  analyst.py    LLM resolution-risk analyst + offline heuristic (B5)
+  merkle.py     Merkle commitments/proofs for the track record (B6)
+  circuit.py    per-venue circuit breaker (B7)
+  streaming.py  WSS price ingestion (B1) · notifier.py  webhook alert push (B2)
   embeddings.py Embedder backends for the semantic matcher tier (fastembed default)
   mock.py       realistic offline engine (default)
   live.py       live engine: adapters + algorithms, TTL-cached, history ingest
   storage.py    price-history store (SQLite default, Timescale/PG via env)
-  reconciliation.py  flag → resolve → realized-edge / hit-rate / Brier (track record)
-  watches.py    watch/alert subscription store (push computed, pull drained)
-  adapters/     base.py · polymarket.py · kalshi.py (fetch + normalize only)
-tests/          test_tools · test_billing · test_adapters · test_storage · test_matcher · test_semantic_matcher · test_inspector.md
+  reconciliation.py  flag → resolve → realized-edge / hit-rate / Brier + Merkle root
+  watches.py    watch/alert store + background AlertEngine (push computed, pull drained)
+  adapters/     base.py · polymarket.py · kalshi.py · manifold.py (fetch + normalize only)
+tests/          40+ offline tests: tools · billing · adapters · storage · matcher · hardening · streaming · push · fairvalue · sizing · analyst · trust · ops · manifold
 ```
 
 ## Design principles honored
