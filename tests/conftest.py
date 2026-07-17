@@ -76,6 +76,10 @@ def clean_metering():
     # deliberately-failing transport must not open the breaker for the next.
     from core import circuit
     circuit._BREAKERS.clear()
+    # Calibrator is cached by resolved-sample count; reset so a test that seeds
+    # the reconciliation store trains a fresh calibrator.
+    from core import calibration
+    calibration.clear_cache()
     yield
 
 

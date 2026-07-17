@@ -184,6 +184,8 @@ def register(mcp: FastMCP) -> None:
                     "no_price": round(1.0 - yes, 4),
                     "implied_probability": yes,
                 },
+                # History-calibrated probability (identity until enough outcomes resolve).
+                "calibration": deps.calibrate_probability(yes, market.category),
                 "delayed": True,
                 "realtime": False,
                 "note": f"Free tier: price ~{delay}s delayed from the history store; "
@@ -194,6 +196,7 @@ def register(mcp: FastMCP) -> None:
         # No delayed snapshot exists yet — be honest, don't fabricate staleness.
         return {
             "market": _market_dict(market),
+            "calibration": deps.calibrate_probability(market.yes_price, market.category),
             "delayed": False,
             "realtime": False,
             "note": "No delayed snapshot available yet; showing the latest with an "

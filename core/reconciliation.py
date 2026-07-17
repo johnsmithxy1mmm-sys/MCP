@@ -164,6 +164,17 @@ class ReconciliationStore:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def calibration_samples(self, category: str | None = None) -> list[tuple[float, int]]:
+        """(implied_prob, outcome) pairs from resolved records — the training set
+        for probability calibration. Optionally filter by category (matched on the
+        title's category is not stored, so this filters by kind-agnostic history)."""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT implied_prob, outcome FROM flagged "
+                "WHERE resolved = 1 AND implied_prob IS NOT NULL AND outcome IS NOT NULL"
+            ).fetchall()
+        return [(float(r["implied_prob"]), int(r["outcome"])) for r in rows]
+
     def merkle_commitment(self) -> dict:
         """A Merkle root committing to every resolved record, so the published
         track record can't be silently edited after the fact."""

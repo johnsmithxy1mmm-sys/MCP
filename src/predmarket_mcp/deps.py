@@ -76,6 +76,14 @@ def assess_basis(a: Market, b: Market) -> dict:
     return _assess(a, b)
 
 
+def calibrate_probability(p: float, category: str | None = None) -> dict:
+    """History-calibrated probability for a raw price (C3). Identity until enough
+    resolved outcomes exist."""
+    from core.calibration import calibrate_probability as _cal
+
+    return _cal(p, category)
+
+
 def scan_opportunities(
     min_edge: float, kind: str | None, category: str | None
 ) -> list[Opportunity]:
