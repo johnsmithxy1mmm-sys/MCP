@@ -141,19 +141,40 @@ class LLMAnalyst:
                     }
         return None
 
-    def score(self, market: Market) -> dict:
-        """Structured resolution-risk score; degrades to the heuristic on any error."""
+    def call_tool(self, body: dict, tool_name: str) -> dict | None:
+        """POST a Messages request and return the named tool_use input, or None.
+
+        The single low-level LLM boundary — reused by any structured analysis
+        (resolution risk, resolution-basis diff, …). Never raises; a failure maps
+        to None so callers degrade to their heuristic.
+        """
         import httpx
 
         try:
             with self._client_factory() as client:
-                resp = client.post("/v1/messages", json=self._request_body(market))
+                resp = client.post("/v1/messages", json=body)
             if resp.status_code != 200:
                 raise RuntimeError(f"anthropic HTTP {resp.status_code}")
-            parsed = self.parse_tool_result(resp.json())
+            payload = resp.json()
         except (httpx.HTTPError, RuntimeError, ValueError, KeyError) as exc:
-            log.warning("analyst LLM call failed (%s); using heuristic", type(exc).__name__)
-            parsed = None
+            log.warning("analyst LLM call failed (%s); degrading", type(exc).__name__)
+            return None
+        for block in payload.get("content", []):
+            if block.get("type") == "tool_use" and block.get("name") == tool_name:
+                return block.get("input") or {}
+        return None
+
+    def score(self, market: Market) -> dict:
+        """Structured resolution-risk score; degrades to the heuristic on any error."""
+        raw = self.call_tool(self._request_body(market), "report_resolution_risk")
+        parsed = None
+        if raw is not None and "resolution_risk" in raw:
+            risk = max(0.0, min(1.0, float(raw["resolution_risk"])))
+            parsed = {
+                "resolution_risk": round(risk, 4),
+                "rationale": str(raw.get("rationale", "")),
+                "confidence": round(max(0.0, min(1.0, float(raw.get("confidence", 0.5)))), 4),
+            }
         if parsed is None:
             return {
                 "resolution_risk": heuristic_resolution_risk(market),

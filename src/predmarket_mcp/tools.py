@@ -258,9 +258,11 @@ def register(mcp: FastMCP) -> None:
         meta=_paid_meta("compare_across_venues"),
         description=(
             "For one real-world event, find the matching markets across venues and "
-            "report the spread and direction (which venue is cheaper on YES). Uses the "
-            "cross-venue matcher and returns match confidence. Realtime. "
-            f"Costs {price_str('compare_across_venues')} per call."
+            "report the spread, direction (which venue is cheaper on YES), consensus "
+            "fair value, AND settlement basis_risk — whether the two actually resolve "
+            "by the same rules (source/snapshot/cancellation). If same_contract is "
+            "false, the spread is a bet on which rulebook wins, not free money. "
+            f"Realtime. Costs {price_str('compare_across_venues')} per call."
         ),
     )
     def compare_across_venues(
@@ -271,6 +273,7 @@ def register(mcp: FastMCP) -> None:
             return {"matched": False, "event": event, **_cost_note("compare_across_venues")}
         cheaper = pair.a if pair.a.yes_price <= pair.b.yes_price else pair.b
         fair = deps.assess_fair_value([pair.a, pair.b])
+        basis = deps.assess_basis(pair.a, pair.b)
         return {
             "matched": True,
             "event": pair.event,
@@ -281,6 +284,10 @@ def register(mcp: FastMCP) -> None:
             "fair_value": fair["fair_value"],
             "fair_value_confidence": fair["confidence"],
             "deviations": fair["venues"],
+            # Settlement basis risk: is the spread real, or a bet on which rulebook wins?
+            "basis_risk": basis["basis_risk"],
+            "same_contract": basis["same_contract"],
+            "resolution_differences": basis.get("differences", []),
             "markets": [_market_dict(pair.a), _market_dict(pair.b)],
             "realtime": True,
             **deps.staleness(deps.now()),

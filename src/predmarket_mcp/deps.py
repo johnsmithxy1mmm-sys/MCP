@@ -69,6 +69,13 @@ def assess_fair_value(markets: list[Market]) -> dict:
     return assess(markets)
 
 
+def assess_basis(a: Market, b: Market) -> dict:
+    """Settlement basis risk: do these two markets resolve by the same rules? (C2)"""
+    from core.basis import assess_basis as _assess
+
+    return _assess(a, b)
+
+
 def scan_opportunities(
     min_edge: float, kind: str | None, category: str | None
 ) -> list[Opportunity]:
