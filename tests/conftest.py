@@ -72,6 +72,10 @@ def clean_metering():
         except Exception:
             pass
     base._CLIENTS.clear()
+    # Circuit breakers are process-global; failures accumulated by one test's
+    # deliberately-failing transport must not open the breaker for the next.
+    from core import circuit
+    circuit._BREAKERS.clear()
     yield
 
 

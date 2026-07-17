@@ -16,6 +16,11 @@ class AdapterError(RuntimeError):
     """Raised when a venue API call fails or returns something unusable."""
 
 
+class AdapterClientError(AdapterError):
+    """A 4xx from the venue — the *request* was wrong (bad market id, auth),
+    not the venue. Never counted by the circuit breaker."""
+
+
 # One pooled client per base_url — reused across calls so we keep connections
 # warm (HTTP keep-alive) instead of paying a fresh TCP+TLS handshake per fetch.
 _CLIENTS: dict[str, httpx.Client] = {}
@@ -80,7 +85,10 @@ def fetch_json(base_url: str, path: str, *, params=None, headers=None, venue: st
 
     breaker = get_breaker(venue or base_url)
     try:
-        return breaker.call(_do_fetch, base_url, path, params, headers, venue)
+        return breaker.call(
+            _do_fetch, base_url, path, params, headers, venue,
+            ignore=(AdapterClientError,),  # 4xx = bad request, not a down venue
+        )
     except CircuitOpen as exc:
         raise AdapterError(f"{venue} circuit open: {exc}") from exc
 
@@ -91,7 +99,12 @@ def _do_fetch(base_url: str, path: str, params, headers, venue: str):
     except httpx.HTTPError as exc:  # connect/proxy/timeout/etc.
         raise AdapterError(f"{venue} {path} request failed: {type(exc).__name__}") from exc
     if resp.status_code != 200:
-        raise AdapterError(f"{venue} {path} HTTP {resp.status_code}: {resp.text[:120]}")
+        detail = f"{venue} {path} HTTP {resp.status_code}: {resp.text[:120]}"
+        # 4xx (except 429, which signals venue pushback) is a caller error and
+        # must not trip the venue circuit breaker.
+        if 400 <= resp.status_code < 500 and resp.status_code != 429:
+            raise AdapterClientError(detail)
+        raise AdapterError(detail)
     try:
         return resp.json()
     except ValueError as exc:

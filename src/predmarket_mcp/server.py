@@ -25,11 +25,13 @@ mcp: FastMCP = FastMCP(
     instructions=(
         "Prediction-market intelligence for agents. Normalized data, mispricing "
         "detection, and honest realizable-edge (after fees/gas/slippage) across "
-        "Polymarket and Kalshi. Free tools (search_markets, list_venues, "
-        "evaluate_market) are for discovery; paid tools (find_mispricing, "
-        "compare_across_venues, estimate_execution, get_market_history) return "
-        "realtime intelligence and are priced per call. Every response marks its "
-        "data freshness (`as_of` / `data_age_seconds`). This server returns "
+        "Polymarket and Kalshi (optionally Manifold). Free tools (search_markets, "
+        "list_venues, evaluate_market, track_record) are for discovery and trust; "
+        "paid tools (find_mispricing, compare_across_venues, estimate_execution, "
+        "get_market_history, watch, poll_alerts) return realtime intelligence and "
+        "are priced per call. Every response marks its data freshness (`as_of` / "
+        "`data_age_seconds`); signed provenance is verifiable via GET /pubkey and "
+        "the public track record via GET /track-record. This server returns "
         "intelligence only — it never executes trades or holds funds."
     ),
 )
@@ -76,11 +78,14 @@ async def pubkey(_request: Request) -> JSONResponse:
 @mcp.custom_route("/track-record", methods=["GET"])
 async def public_track_record(_request: Request) -> JSONResponse:
     """Public, tamper-evident track record — auditable without an MCP session."""
+    import anyio
+
     from . import deps
     from .provenance import provenance as _prov
 
-    metrics = deps.track_record_metrics()
-    commitment = deps.track_record_commitment()
+    # SQLite reads off the event loop (consistent with the async-IO discipline).
+    metrics = await anyio.to_thread.run_sync(deps.track_record_metrics)
+    commitment = await anyio.to_thread.run_sync(deps.track_record_commitment)
     signed = {**metrics, "commitment": commitment}
     return JSONResponse(
         {"track_record": metrics, "commitment": commitment, "provenance": _prov(signed)}
@@ -105,10 +110,10 @@ def _register() -> None:
 _register()
 
 
-def build_http_app():
-    """Starlette ASGI app for streamable-http, with ops + x402 middleware.
-
-    Exposed so ``uvicorn`` / ``fastmcp run`` can serve it directly.
+def _http_middleware():
+    """The full HTTP middleware stack — ONE assembly shared by every entrypoint
+    (uvicorn app, `python -m`, fastmcp run) so no path silently loses a layer.
+    Rate limit outermost (cheap reject before any work), then x402 enforcement.
     """
     from starlette.middleware import Middleware as ASGIMiddleware
 
@@ -116,9 +121,15 @@ def build_http_app():
     from .ops import RateLimitMiddleware, configure_logging
 
     configure_logging()
-    # Rate limit outermost (cheap reject before any work), then x402 enforcement.
-    middleware = [ASGIMiddleware(RateLimitMiddleware), *asgi_middleware()]
-    return mcp.http_app(transport="streamable-http", middleware=middleware)
+    return [ASGIMiddleware(RateLimitMiddleware), *asgi_middleware()]
+
+
+def build_http_app():
+    """Starlette ASGI app for streamable-http, with ops + x402 middleware.
+
+    Exposed so ``uvicorn`` / ``fastmcp run`` can serve it directly.
+    """
+    return mcp.http_app(transport="streamable-http", middleware=_http_middleware())
 
 
 # ASGI entrypoint for `uvicorn predmarket_mcp.server:app`.
@@ -127,11 +138,9 @@ app = build_http_app()
 
 if __name__ == "__main__":
     settings = get_settings()
-    from .billing.middleware import asgi_middleware
-
     mcp.run(
         transport="streamable-http",
         host=settings.host,
         port=settings.port,
-        middleware=asgi_middleware(),
+        middleware=_http_middleware(),
     )

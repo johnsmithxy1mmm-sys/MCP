@@ -69,9 +69,8 @@ def test_circuit_wraps_adapter_fetch(monkeypatch):
 
     monkeypatch.setenv("CIRCUIT_FAIL_MAX", "2")
     base._CLIENTS.clear()
-    base._BREAKERS = {}  # ensure a fresh breaker registry for this venue name
     from core import circuit
-    circuit._BREAKERS.pop("TestVenue", None)
+    circuit._BREAKERS.pop("TestVenue", None)  # fresh breaker for this venue name
 
     def make_client(base_url, timeout=None):
         return httpx.Client(base_url=base_url,

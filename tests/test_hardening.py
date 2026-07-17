@@ -110,7 +110,7 @@ def _mk(mid, close_days):
     )
 
 
-def test_annotate_uses_earliest_close_across_all_legs():
+def test_annotate_uses_latest_close_across_all_legs():
     opp = Opportunity(
         kind=OpportunityKind.CROSS_VENUE, title="x", category=None,
         realizable_edge=0.10, max_size_usd=100.0,
@@ -119,10 +119,12 @@ def test_annotate_uses_earliest_close_across_all_legs():
             Leg(venue=Venue.POLYMARKET, market_id="far", side=Side.NO),
         ],
     )
-    markets = [_mk("far", 100), _mk("near", 2)]  # 'far' is leg[0]-agnostic
+    markets = [_mk("near", 2), _mk("far", 100)]  # leg order must not matter
     algorithms.finalize_opportunities([opp], markets)
-    # Holding period must reflect the NEAREST close (2 days), not leg[0]/far.
-    assert opp.holding_days == pytest.approx(2.0, abs=0.05)
+    # The basket is fully realized only when the LAST leg resolves (100 days) —
+    # using the earlier close would overstate the annualized edge.
+    assert opp.holding_days == pytest.approx(100.0, abs=0.05)
+    assert opp.annualized_edge == pytest.approx(0.10 / 100.0 * 365.0, abs=1e-3)
 
 
 def test_finalize_caps_size_by_book_depth():

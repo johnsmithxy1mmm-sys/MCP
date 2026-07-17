@@ -64,12 +64,19 @@ class CircuitBreaker:
                 self._state = "open"
                 self._opened_at = time.monotonic()
 
-    def call(self, fn, *args, **kwargs):
-        """Run ``fn`` through the breaker; raise :class:`CircuitOpen` if open."""
+    def call(self, fn, *args, ignore: tuple = (), **kwargs):
+        """Run ``fn`` through the breaker; raise :class:`CircuitOpen` if open.
+
+        Exceptions listed in ``ignore`` propagate WITHOUT counting as a venue
+        failure (e.g. a 404 for a bad market id is the caller's problem, not a
+        sign the venue is down — it must not open the breaker).
+        """
         if not self.allow():
             raise CircuitOpen(f"circuit '{self.name}' is open")
         try:
             result = fn(*args, **kwargs)
+        except ignore:
+            raise  # caller error: neither a failure nor a success signal
         except Exception:
             self.record_failure()
             raise

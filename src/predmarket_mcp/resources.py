@@ -21,12 +21,18 @@ def register(mcp: FastMCP) -> None:
     @mcp.resource(
         "alerts://{client_id}",
         description=(
-            "Peek the alerts currently queued for a client's watches WITHOUT "
-            "consuming them (poll_alerts drains; this only reads). Use for a "
-            "subscribe/refresh view; pair with the webhook push for true delivery."
+            "Peek the alerts currently queued for YOUR watches WITHOUT consuming "
+            "them (poll_alerts drains; this only reads). The client_id must match "
+            "your own caller identity. Use for a subscribe/refresh view; pair "
+            "with the webhook push for true delivery."
         ),
     )
     def alerts_resource(client_id: str) -> dict:
+        from .tools import _client_id as caller_id
+
+        # Alerts can carry paid intelligence — only the owning caller may peek.
+        if client_id != caller_id():
+            return {"error": "forbidden", "detail": "client_id does not match caller"}
         alerts = deps.peek_alerts(client_id)
         return {
             "client_id": client_id,

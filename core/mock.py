@@ -15,6 +15,7 @@ import random
 from datetime import datetime, timedelta, timezone
 
 from .algorithms import estimate_realizable_edge, finalize_opportunities, scan_dutch_book
+from .fairvalue import consensus
 from .models import (
     ExecutionEstimate,
     Leg,
@@ -290,8 +291,6 @@ def scan_opportunities(
         if net < min_edge:
             continue
         cheap, dear = (a, b) if a.yes_price < b.yes_price else (b, a)
-        from .fairvalue import consensus
-
         out.append(Opportunity(
             kind=OpportunityKind.CROSS_VENUE,
             title=label,

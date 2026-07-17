@@ -80,11 +80,18 @@ class TokenBucket:
 
 
 class RateLimiter:
+    # Bound the per-client bucket map so many distinct callers can't grow
+    # memory without limit; oldest-touched buckets are evicted (their next
+    # request just starts a fresh full bucket — safe for a limiter).
+    MAX_BUCKETS = int(os.getenv("RATE_LIMIT_MAX_CLIENTS", "10000"))
+
     def __init__(self, rpm: int, burst: int | None = None):
+        from collections import OrderedDict
+
         self.rpm = rpm
         self.rate = rpm / 60.0
         self.capacity = float(burst if burst is not None else rpm)
-        self._buckets: dict[str, TokenBucket] = {}
+        self._buckets: "OrderedDict[str, TokenBucket]" = OrderedDict()
         self._lock = threading.Lock()
 
     @property
@@ -99,6 +106,9 @@ class RateLimiter:
             if bucket is None:
                 bucket = TokenBucket(self.rate, self.capacity)
                 self._buckets[client_id] = bucket
+            self._buckets.move_to_end(client_id)
+            while len(self._buckets) > self.MAX_BUCKETS:
+                self._buckets.popitem(last=False)
             return bucket.take()
 
 

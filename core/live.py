@@ -151,9 +151,22 @@ class LiveRepo:
 repo = LiveRepo()
 
 
+_last_invalidate = 0.0
+
+
 def _stream_sink(venue: str, market_id: str, yes_price: float) -> None:
-    """Invalidate the cached market list on a live tick so the next fetch is fresh."""
-    repo._markets._store.clear()
+    """Invalidate the cached market list on live ticks — throttled.
+
+    Clearing on EVERY tick would defeat the TTL cache under a busy stream and
+    hammer venue APIs on each tool call; at most one invalidation per half-TTL
+    halves worst-case staleness without cache thrash. (History already gets
+    every tick regardless — this only affects the cached market list.)
+    """
+    global _last_invalidate
+    now = time.monotonic()
+    if now - _last_invalidate >= _MARKET_TTL / 2:
+        _last_invalidate = now
+        repo._markets._store.clear()
 
 
 # Real-time ingestion (STREAMING=on). Off by default; writes ticks into the same

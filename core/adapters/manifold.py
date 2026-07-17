@@ -16,6 +16,7 @@ give a consensus with a real dispersion signal (B3/B8).
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 
 from ..models import Market, OrderbookLevel, OrderbookSnapshot, Venue
@@ -35,8 +36,6 @@ class ManifoldAdapter(VenueAdapter):
     venue = Venue.MANIFOLD
 
     def __init__(self, base_url: str | None = None):
-        import os
-
         self.base_url = base_url or os.getenv("MANIFOLD_API_URL", MANIFOLD_URL)
         self._liquidity: dict[str, float] = {}
 

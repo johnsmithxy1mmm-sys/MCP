@@ -49,7 +49,11 @@ def normalize_tick(venue: str, raw: dict) -> tuple[str, float] | None:
         if raw.get("event_type") not in ("price_change", "last_trade_price", "book"):
             return None
         market_id = raw.get("market") or raw.get("asset_id")
-        price = raw.get("price") or raw.get("mid")
+        # Explicit None checks: a price of 0 (or "0") is a legitimate quote and
+        # must not be treated as missing by `or`-chaining.
+        price = raw.get("price")
+        if price is None:
+            price = raw.get("mid")
         if market_id is None or price is None:
             return None
         try:

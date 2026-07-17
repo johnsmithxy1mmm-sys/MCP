@@ -147,12 +147,27 @@ def embed_texts(texts: list[str]) -> list[list[float]] | None:
     embedder = get_embedder()
     if embedder is None:
         return None
-    missing = [t for t in texts if _cache_get(t) is None]
+    # Assemble results in a local map, NOT by re-reading the cache afterwards:
+    # if one call has more unique texts than the cache bound, fresh entries
+    # would evict each other and a final cache re-read would return Nones.
+    have: dict[str, list[float]] = {}
+    missing: list[str] = []
+    seen_missing: set[str] = set()
+    for t in texts:
+        if t in have or t in seen_missing:
+            continue
+        vec = _cache_get(t)
+        if vec is None:
+            missing.append(t)
+            seen_missing.add(t)
+        else:
+            have[t] = vec
     if missing:
         vectors = embedder.embed(missing)
         for text, vec in zip(missing, vectors):
+            have[text] = vec
             _cache_put(text, vec)
-    return [_cache_get(t) for t in texts]
+    return [have[t] for t in texts]
 
 
 def clear_cache() -> None:

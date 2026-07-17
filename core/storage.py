@@ -42,7 +42,7 @@ class HistoryStore:
         # Bounded retention so the local store can't grow forever. 0/negative
         # disables pruning (keep everything). Checked at most once per hour.
         self._retention_days = float(os.getenv("HISTORY_RETENTION_DAYS", "90"))
-        self._last_prune = 0.0
+        self._last_prune: float | None = None  # None -> prune on first write
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
@@ -93,7 +93,9 @@ class HistoryStore:
         if self._retention_days <= 0:
             return
         now = time.monotonic()
-        if now - self._last_prune < 3600:
+        # None-sentinel (not 0.0): monotonic() starts near zero on fresh boots,
+        # which would silently skip pruning for the machine's first hour.
+        if self._last_prune is not None and now - self._last_prune < 3600:
             return
         self._last_prune = now
         cutoff = (datetime.now(timezone.utc) - timedelta(days=self._retention_days)).isoformat()

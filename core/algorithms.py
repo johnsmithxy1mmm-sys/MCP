@@ -20,6 +20,7 @@ import re
 from difflib import SequenceMatcher
 from typing import Callable
 
+from .fairvalue import consensus
 from .models import (
     ExecutionEstimate,
     Leg,
@@ -297,8 +298,6 @@ def scan_cross_venue(
         if net < min_edge:
             continue
         cheap, dear = (a, b) if a.yes_price < b.yes_price else (b, a)
-        from .fairvalue import consensus  # local import: keeps algorithms import-light
-
         out.append(Opportunity(
             kind=OpportunityKind.CROSS_VENUE,
             title=pair.event,
@@ -411,20 +410,21 @@ def annotate_risk(
     return opp
 
 
-def _earliest_close(opp: Opportunity, close_by_id: dict) -> object | None:
-    """Earliest close time across ALL of an opportunity's legs.
+def _latest_close(opp: Opportunity, close_by_id: dict) -> object | None:
+    """Latest close time across ALL of an opportunity's legs.
 
-    A multi-leg position isn't realized until its LAST leg resolves, and capital
-    is locked by the leg that resolves soonest only if you can unwind — but the
-    honest holding period is bounded by the earliest close among the legs you
-    must hold. Using only leg[0] (the old behavior) ignored the other legs.
+    A multi-leg position's edge is fully realized only when its LAST leg
+    resolves — capital stays committed until then. Using leg[0] (the old
+    behavior) or the earliest close would understate the holding period and
+    OVERSTATE annualized edge; the latest close is the honest, conservative
+    basis.
     """
     closes = [
         close_by_id.get(l.market_id)
         for l in opp.legs
         if close_by_id.get(l.market_id) is not None
     ]
-    return min(closes) if closes else None
+    return max(closes) if closes else None
 
 
 def _cap_size_by_depth(opp: Opportunity, book_getter: BookGetter) -> None:
@@ -451,13 +451,13 @@ def finalize_opportunities(
     markets: list[Market],
     book_getter: BookGetter | None = None,
 ) -> list[Opportunity]:
-    """Risk-adjust (earliest close across all legs) and depth-cap, then sort.
+    """Risk-adjust (latest close across all legs) and depth-cap, then sort.
 
     Shared by the mock and live engines so the risk math lives in one place.
     """
     close_by_id = {m.market_id: m.close_time for m in markets}
     for opp in opps:
-        annotate_risk(opp, _earliest_close(opp, close_by_id))
+        annotate_risk(opp, _latest_close(opp, close_by_id))
         if book_getter is not None:
             _cap_size_by_depth(opp, book_getter)
     opps.sort(key=lambda o: o.realizable_edge, reverse=True)
