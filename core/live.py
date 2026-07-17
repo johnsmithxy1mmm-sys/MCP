@@ -16,7 +16,7 @@ from collections import OrderedDict
 from datetime import datetime
 
 from . import algorithms
-from .adapters import AdapterError, KalshiAdapter, PolymarketAdapter
+from .adapters import AdapterError, KalshiAdapter, ManifoldAdapter, PolymarketAdapter
 from .storage import HistoryStore
 from .models import (
     ExecutionEstimate,
@@ -66,6 +66,10 @@ class LiveRepo:
             Venue.POLYMARKET.value: PolymarketAdapter(),
             Venue.KALSHI.value: KalshiAdapter(),
         }
+        # Manifold is opt-in (play-money probabilities; useful as a 3rd consensus
+        # anchor for fair value). Enable with MANIFOLD_ENABLED=on.
+        if os.getenv("MANIFOLD_ENABLED", "").lower() in ("1", "on", "true", "yes"):
+            self._adapters[Venue.MANIFOLD.value] = ManifoldAdapter()
         self._markets = _TTLCache(_MARKET_TTL)
         self._books = _TTLCache(_BOOK_TTL)
         self._history = HistoryStore()

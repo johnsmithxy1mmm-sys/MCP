@@ -21,6 +21,7 @@ def utcnow() -> datetime:
 class Venue(str, Enum):
     POLYMARKET = "polymarket"
     KALSHI = "kalshi"
+    MANIFOLD = "manifold"
 
 
 class Side(str, Enum):
