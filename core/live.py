@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import time
+from collections import OrderedDict
 from datetime import datetime
 
 from . import algorithms
@@ -30,21 +31,31 @@ from .models import (
 
 _MARKET_TTL = float(os.getenv("LIVE_MARKET_TTL", "30"))
 _BOOK_TTL = float(os.getenv("LIVE_BOOK_TTL", "5"))
+_CACHE_MAX = int(os.getenv("LIVE_CACHE_MAX", "5000"))
 
 
 class _TTLCache:
-    def __init__(self, ttl: float):
+    """TTL cache with a bounded size (LRU eviction) so it can't grow forever."""
+
+    def __init__(self, ttl: float, max_entries: int = _CACHE_MAX):
         self.ttl = ttl
-        self._store: dict = {}
+        self.max_entries = max_entries
+        self._store: "OrderedDict[object, tuple]" = OrderedDict()
 
     def get(self, key):
         hit = self._store.get(key)
         if hit and (time.monotonic() - hit[0]) < self.ttl:
+            self._store.move_to_end(key)
             return hit[1]
+        if hit:
+            self._store.pop(key, None)  # expired
         return None
 
     def put(self, key, value):
         self._store[key] = (time.monotonic(), value)
+        self._store.move_to_end(key)
+        while len(self._store) > self.max_entries:
+            self._store.popitem(last=False)
 
 
 class LiveRepo:
@@ -154,13 +165,8 @@ def scan_opportunities(
         out += algorithms.scan_bundle(markets, min_edge, category)
     if kind in (None, "dutch_book"):
         out += algorithms.scan_dutch_book(markets, min_edge, category)
-    # Risk-adjust (holding period + annualized edge) from each leg's close time.
-    close_by_id = {m.market_id: m.close_time for m in markets}
-    for o in out:
-        close_time = close_by_id.get(o.legs[0].market_id) if o.legs else None
-        algorithms.annotate_risk(o, close_time)
-    out.sort(key=lambda o: o.realizable_edge, reverse=True)
-    return out
+    # Risk-adjust (earliest close across all legs) + cap size by live book depth.
+    return algorithms.finalize_opportunities(out, markets, repo.get_orderbook)
 
 
 def realizable_edge(legs: list[Leg], size_usd: float) -> ExecutionEstimate:

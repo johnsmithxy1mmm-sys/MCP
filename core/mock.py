@@ -14,7 +14,7 @@ import hashlib
 import random
 from datetime import datetime, timedelta, timezone
 
-from .algorithms import annotate_risk, estimate_realizable_edge, scan_dutch_book
+from .algorithms import estimate_realizable_edge, finalize_opportunities, scan_dutch_book
 from .models import (
     ExecutionEstimate,
     Leg,
@@ -325,16 +325,11 @@ def scan_opportunities(
     # Dutch book: combinatorial arb across mutually-exclusive outcome groups.
     out += scan_dutch_book(_MARKETS, min_edge, category)
 
-    # Risk-adjust every opportunity (holding period + annualized edge).
-    close_by_id = {m.market_id: m.close_time for m in _MARKETS}
-    for o in out:
-        close_time = close_by_id.get(o.legs[0].market_id) if o.legs else None
-        annotate_risk(o, close_time)
-
     if kind:
         out = [o for o in out if o.kind.value == kind]
-    out.sort(key=lambda o: o.realizable_edge, reverse=True)
-    return out
+    # Risk-adjust (earliest close across all legs) + sort. No depth cap here: the
+    # mock keeps its curated volume-based sizes so fixture-based tests stay stable.
+    return finalize_opportunities(out, _MARKETS)
 
 
 # ---------------------------------------------------------------------------

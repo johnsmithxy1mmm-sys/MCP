@@ -406,3 +406,56 @@ def annotate_risk(
         opp.annualized_edge = round(opp.realizable_edge / days * 365.0, 4)
     opp.resolution_risk = resolution_risk
     return opp
+
+
+def _earliest_close(opp: Opportunity, close_by_id: dict) -> object | None:
+    """Earliest close time across ALL of an opportunity's legs.
+
+    A multi-leg position isn't realized until its LAST leg resolves, and capital
+    is locked by the leg that resolves soonest only if you can unwind — but the
+    honest holding period is bounded by the earliest close among the legs you
+    must hold. Using only leg[0] (the old behavior) ignored the other legs.
+    """
+    closes = [
+        close_by_id.get(l.market_id)
+        for l in opp.legs
+        if close_by_id.get(l.market_id) is not None
+    ]
+    return min(closes) if closes else None
+
+
+def _cap_size_by_depth(opp: Opportunity, book_getter: BookGetter) -> None:
+    """Cap ``max_size_usd`` by the real top-of-book depth of the tightest leg.
+
+    A volume-derived cap can promise size the book can't actually fill. The
+    executable size of a multi-leg position is bounded by its thinnest leg, so we
+    shrink ``max_size_usd`` to the minimum available depth across legs (best
+    effort — a missing book leaves the volume-based estimate untouched).
+    """
+    leg_depths: list[float] = []
+    for leg in opp.legs:
+        book = book_getter(leg.venue.value, leg.market_id)
+        if not book:
+            return  # can't verify a leg -> don't overstate; keep volume estimate
+        levels = book.yes_asks if leg.side == Side.YES else book.yes_bids
+        leg_depths.append(sum(l.size_usd for l in levels))
+    if leg_depths:
+        opp.max_size_usd = round(min(opp.max_size_usd, min(leg_depths)), 2)
+
+
+def finalize_opportunities(
+    opps: list[Opportunity],
+    markets: list[Market],
+    book_getter: BookGetter | None = None,
+) -> list[Opportunity]:
+    """Risk-adjust (earliest close across all legs) and depth-cap, then sort.
+
+    Shared by the mock and live engines so the risk math lives in one place.
+    """
+    close_by_id = {m.market_id: m.close_time for m in markets}
+    for opp in opps:
+        annotate_risk(opp, _earliest_close(opp, close_by_id))
+        if book_getter is not None:
+            _cap_size_by_depth(opp, book_getter)
+    opps.sort(key=lambda o: o.realizable_edge, reverse=True)
+    return opps

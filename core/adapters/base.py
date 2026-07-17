@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import atexit
 import os
+import threading
 from abc import ABC, abstractmethod
 
 import httpx
@@ -12,6 +14,12 @@ from ..models import Market, OrderbookSnapshot, Venue
 
 class AdapterError(RuntimeError):
     """Raised when a venue API call fails or returns something unusable."""
+
+
+# One pooled client per base_url — reused across calls so we keep connections
+# warm (HTTP keep-alive) instead of paying a fresh TCP+TLS handshake per fetch.
+_CLIENTS: dict[str, httpx.Client] = {}
+_CLIENTS_LOCK = threading.Lock()
 
 
 def _matches_query(query: str | None, market: "Market") -> bool:
@@ -37,16 +45,38 @@ def make_client(base_url: str, timeout: float | None = None) -> httpx.Client:
     )
 
 
+def get_client(base_url: str) -> httpx.Client:
+    """Return the pooled client for ``base_url`` (created once, thread-safe)."""
+    client = _CLIENTS.get(base_url)
+    if client is not None:
+        return client
+    with _CLIENTS_LOCK:
+        client = _CLIENTS.get(base_url)
+        if client is None:
+            client = make_client(base_url)
+            _CLIENTS[base_url] = client
+        return client
+
+
+@atexit.register
+def _close_clients() -> None:
+    for client in _CLIENTS.values():
+        try:
+            client.close()
+        except Exception:
+            pass
+
+
 def fetch_json(base_url: str, path: str, *, params=None, headers=None, venue: str = ""):
     """GET ``path`` and return parsed JSON, mapping ANY failure to AdapterError.
 
     This is the single network boundary: connection errors, timeouts, non-200
     statuses, and bad JSON all surface as ``AdapterError`` so callers (the live
-    engine) can degrade gracefully instead of crashing a tool.
+    engine) can degrade gracefully instead of crashing a tool. Uses a pooled,
+    keep-alive client per host instead of opening a new connection per call.
     """
     try:
-        with make_client(base_url) as client:
-            resp = client.get(path, params=params, headers=headers)
+        resp = get_client(base_url).get(path, params=params, headers=headers)
     except httpx.HTTPError as exc:  # connect/proxy/timeout/etc.
         raise AdapterError(f"{venue} {path} request failed: {type(exc).__name__}") from exc
     if resp.status_code != 200:

@@ -26,6 +26,7 @@ from __future__ import annotations
 import math
 import os
 from abc import ABC, abstractmethod
+from collections import OrderedDict
 from functools import lru_cache
 
 VOYAGE_URL = os.getenv("VOYAGE_API_URL", "https://api.voyageai.com")
@@ -117,24 +118,41 @@ def get_embedder() -> Embedder | None:
 
 
 # --- batched vector cache ---------------------------------------------------
-_CACHE: dict[str, list[float]] = {}
+# Bounded LRU so the vector cache can't grow without limit under many titles.
+_CACHE_SIZE = int(os.getenv("EMBED_CACHE_SIZE", "10000"))
+_CACHE: "OrderedDict[str, list[float]]" = OrderedDict()
+
+
+def _cache_get(text: str):
+    vec = _CACHE.get(text)
+    if vec is not None:
+        _CACHE.move_to_end(text)  # mark most-recently-used
+    return vec
+
+
+def _cache_put(text: str, vec: list[float]) -> None:
+    _CACHE[text] = vec
+    _CACHE.move_to_end(text)
+    while len(_CACHE) > _CACHE_SIZE:
+        _CACHE.popitem(last=False)  # evict least-recently-used
 
 
 def embed_texts(texts: list[str]) -> list[list[float]] | None:
     """Return vectors for ``texts``, embedding only cache misses (one batch).
 
     Returns None if no embedder is available. Caching makes matching O(N) in
-    embed calls instead of O(N^2) — critical for paid/hosted backends.
+    embed calls instead of O(N^2) — critical for paid/hosted backends. The cache
+    is a bounded LRU (EMBED_CACHE_SIZE) so it can't grow without limit.
     """
     embedder = get_embedder()
     if embedder is None:
         return None
-    missing = [t for t in texts if t not in _CACHE]
+    missing = [t for t in texts if _cache_get(t) is None]
     if missing:
         vectors = embedder.embed(missing)
         for text, vec in zip(missing, vectors):
-            _CACHE[text] = vec
-    return [_CACHE[t] for t in texts]
+            _cache_put(text, vec)
+    return [_cache_get(t) for t in texts]
 
 
 def clear_cache() -> None:

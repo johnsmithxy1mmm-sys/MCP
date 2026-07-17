@@ -103,14 +103,28 @@ def test_polymarket_market_normalization(monkeypatch):
 
 
 def test_polymarket_orderbook_normalization(monkeypatch):
-    monkeypatch.setattr(base, "make_client",
-                        _mock_client_factory({"/book": CLOB_BOOK}))
+    # /book for depth; gamma /markets so an unknown conditionId resolves to its
+    # YES clob token (the adapter must never send a conditionId as a token_id).
+    monkeypatch.setattr(base, "make_client", _mock_client_factory({
+        "/book": CLOB_BOOK,
+        "gamma-api.polymarket.com/markets": GAMMA_MARKETS,
+    }))
     adapter = polymarket.PolymarketAdapter()
-    book = adapter.fetch_orderbook("0xcond-btc")
+    book = adapter.fetch_orderbook("0xcond-btc")  # token map empty -> Gamma fallback
     assert book.venue == Venue.POLYMARKET
+    assert adapter._token_by_market["0xcond-btc"] == "tokenYES"
     # asks sorted ascending, bids descending
     assert book.yes_asks[0].price == 0.715
     assert book.yes_bids[0].price == 0.70
+
+
+def test_polymarket_orderbook_unknown_market_returns_none(monkeypatch):
+    # Unresolvable market (no token, Gamma returns nothing) -> None, never a
+    # bogus book fetched with the conditionId as the token_id.
+    monkeypatch.setattr(base, "make_client",
+                        _mock_client_factory({"gamma-api.polymarket.com/markets": []}))
+    adapter = polymarket.PolymarketAdapter()
+    assert adapter.fetch_orderbook("0xunknown") is None
 
 
 def test_polymarket_query_filter(monkeypatch):

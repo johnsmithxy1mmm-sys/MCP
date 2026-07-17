@@ -62,6 +62,16 @@ def clean_metering():
     # Embedding vector cache must not leak between tests (different fake embedders).
     from core import embeddings
     embeddings.clear_cache()
+    # Pooled HTTP clients must not leak between tests: each test monkeypatches
+    # base.make_client with its own MockTransport, and a cached client from a
+    # prior test would silently ignore that patch.
+    from core.adapters import base
+    for _c in base._CLIENTS.values():
+        try:
+            _c.close()
+        except Exception:
+            pass
+    base._CLIENTS.clear()
     yield
 
 

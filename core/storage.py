@@ -15,7 +15,8 @@ from __future__ import annotations
 import os
 import sqlite3
 import threading
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .models import Market, PricePoint
@@ -38,6 +39,10 @@ class HistoryStore:
         self._url = db_url or os.getenv("HISTORY_DB_URL", "sqlite:///history.db")
         self._path = _sqlite_path(self._url)
         self._lock = threading.Lock()
+        # Bounded retention so the local store can't grow forever. 0/negative
+        # disables pruning (keep everything). Checked at most once per hour.
+        self._retention_days = float(os.getenv("HISTORY_RETENTION_DAYS", "90"))
+        self._last_prune = 0.0
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
@@ -74,6 +79,7 @@ class HistoryStore:
         ts: datetime | None = None,
     ) -> None:
         ts = ts or datetime.now(timezone.utc)
+        self._maybe_prune()  # opportunistic, throttled; before we take the lock
         with self._lock, self._connect() as conn:
             conn.execute(
                 "INSERT INTO price_history (venue, market_id, ts, yes_price, spread) "
@@ -81,6 +87,18 @@ class HistoryStore:
                 (venue, market_id, ts.isoformat(), round(yes_price, 4),
                  round(spread, 4) if spread is not None else None),
             )
+
+    def _maybe_prune(self) -> None:
+        """Delete points older than the retention window (throttled to hourly)."""
+        if self._retention_days <= 0:
+            return
+        now = time.monotonic()
+        if now - self._last_prune < 3600:
+            return
+        self._last_prune = now
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=self._retention_days)).isoformat()
+        with self._lock, self._connect() as conn:
+            conn.execute("DELETE FROM price_history WHERE ts < ?", (cutoff,))
 
     def record_market(self, market: Market, ts: datetime | None = None) -> None:
         """Convenience: record a snapshot straight from a Market."""

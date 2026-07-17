@@ -100,22 +100,43 @@ def resolve_outcomes(outcomes: dict[str, int]) -> int:
 
 
 # --- watches / alerts (push subscription model) ----------------------------
-from core.watches import get_watches  # noqa: E402
+from core.watches import (  # noqa: E402
+    WatchLimitError,
+    alert_engine_running,
+    get_watches,
+    start_alert_engine,
+)
+
+
+def _scan_all() -> list[Opportunity]:
+    """Full unfiltered scan — the firing input for watches/the alert engine."""
+    return scan_opportunities(0.0, None, None)
+
+
+# If ALERT_ENGINE is set, a background thread does the firing (poll becomes
+# drain-only). Off by default: firing happens inline in create_watch/poll_alerts
+# so offline tests and serverless deploys stay fully synchronous.
+start_alert_engine(_scan_all)
 
 
 def create_watch(client_id, min_edge, category=None, kind=None, event=None) -> dict:
     """Register a watch, run an immediate scan, return id + any instant matches."""
     store = get_watches()
-    watch_id = store.create_watch(client_id, min_edge, category, kind, event)
-    store.fire(scan_opportunities(0.0, None, None))  # evaluate against current opps
+    try:
+        watch_id = store.create_watch(client_id, min_edge, category, kind, event)
+    except WatchLimitError as exc:
+        return {"error": "watch_limit_reached", "detail": str(exc)}
+    store.fire(_scan_all())  # evaluate against current opps (immediate matches)
     immediate = [a for a in store.drain(client_id) if a["watch_id"] == watch_id]
     return {"watch_id": watch_id, "immediate_matches": immediate}
 
 
 def poll_alerts(client_id) -> list[dict]:
-    """Re-scan (push side), then drain this client's queued alerts (pull side)."""
+    """Drain this client's queued alerts. Fires inline only when no background
+    engine is running (otherwise the engine already did the scan)."""
     store = get_watches()
-    store.fire(scan_opportunities(0.0, None, None))
+    if not alert_engine_running():
+        store.fire(_scan_all())
     return store.drain(client_id)
 
 

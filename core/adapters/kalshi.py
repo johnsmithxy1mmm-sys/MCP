@@ -111,6 +111,10 @@ class KalshiAdapter(VenueAdapter):
         else:
             yes = _cents_to_prob(row.get("last_price"))
         yes = min(1.0, max(0.0, yes))
+        # Kalshi `volume` is a CONTRACT count, not dollars. Each contract settles
+        # at $1, so USD notional traded ~= contracts * price (a contract's cost).
+        contracts = float(row.get("volume") or 0)
+        volume_usd = round(contracts * yes, 2) if contracts and yes else None
         return Market(
             venue=Venue.KALSHI,
             market_id=ticker,
@@ -118,7 +122,7 @@ class KalshiAdapter(VenueAdapter):
             category=(str(row["category"]).lower() if row.get("category") else None),
             yes_price=yes,
             no_price=round(1.0 - yes, 4),
-            volume_usd=float(row.get("volume") or 0) or None,
+            volume_usd=volume_usd,
         )
 
     def fetch_orderbook(self, market_id: str) -> OrderbookSnapshot | None:
@@ -132,14 +136,16 @@ class KalshiAdapter(VenueAdapter):
         # the complement of a NO bid: price_yes_ask = 1 - price_no_bid.
         yes_levels = book.get("yes") or []
         no_levels = book.get("no") or []
-        bids = [
-            OrderbookLevel(price=_cents_to_prob(p), size_usd=round(float(s), 2))
-            for p, s in yes_levels
-        ]
-        asks = [
-            OrderbookLevel(price=round(1.0 - _cents_to_prob(p), 4), size_usd=round(float(s), 2))
-            for p, s in no_levels
-        ]
+        # Kalshi depth sizes are CONTRACT counts; USD notional at a level is
+        # contracts * price (what it costs to take that price level).
+        bids = []
+        for p, s in yes_levels:
+            price = _cents_to_prob(p)
+            bids.append(OrderbookLevel(price=price, size_usd=round(float(s) * price, 2)))
+        asks = []
+        for p, s in no_levels:
+            price = round(1.0 - _cents_to_prob(p), 4)
+            asks.append(OrderbookLevel(price=price, size_usd=round(float(s) * price, 2)))
         bids.sort(key=lambda l: l.price, reverse=True)
         asks.sort(key=lambda l: l.price)
         return OrderbookSnapshot(

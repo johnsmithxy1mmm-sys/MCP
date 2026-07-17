@@ -99,9 +99,33 @@ class PolymarketAdapter(VenueAdapter):
             close_time=close_time,
         )
 
+    def _resolve_token(self, market_id: str) -> str | None:
+        """YES clob token id for a conditionId — cache first, then Gamma lookup.
+
+        Never silently sends a conditionId as a token_id (that returns an empty
+        book). Returns None if the market can't be resolved to a token.
+        """
+        token = self._token_by_market.get(market_id)
+        if token:
+            return token
+        # Gamma fallback: fetch this one market and extract its clobTokenIds.
+        try:
+            rows = fetch_json(
+                GAMMA_URL, "/markets",
+                params={"condition_ids": market_id, "limit": 1},
+                venue="Polymarket",
+            )
+        except Exception:
+            return None
+        for row in rows if isinstance(rows, list) else []:
+            self._normalize_market(row)  # populates self._token_by_market
+        return self._token_by_market.get(market_id)
+
     # -- orderbook --------------------------------------------------------
     def fetch_orderbook(self, market_id: str) -> OrderbookSnapshot | None:
-        token_id = self._token_by_market.get(market_id, market_id)
+        token_id = self._resolve_token(market_id)
+        if not token_id:
+            return None  # unknown market -> no book (never guess the token)
         data = fetch_json(CLOB_URL, "/book", params={"token_id": token_id}, venue="Polymarket")
         asks = [
             OrderbookLevel(price=round(_f(l.get("price")), 4), size_usd=round(_f(l.get("size")), 2))

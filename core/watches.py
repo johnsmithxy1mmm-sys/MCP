@@ -21,12 +21,21 @@ import json
 import os
 import sqlite3
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 
 from .models import Opportunity
+
+# Per-client cap on active watches, so one caller can't register unbounded
+# standing scans (each watch is evaluated on every fire).
+WATCH_MAX_PER_CLIENT = int(os.getenv("WATCH_MAX_PER_CLIENT", "50"))
+
+
+class WatchLimitError(RuntimeError):
+    """Raised when a client already holds the maximum number of active watches."""
 
 
 def _sqlite_path(db_url: str) -> str:
@@ -99,10 +108,22 @@ class WatchStore:
             )
 
     # -- watches -----------------------------------------------------------
+    def count_active(self, client_id: str) -> int:
+        with self._lock, self._connect() as conn:
+            return conn.execute(
+                "SELECT COUNT(*) FROM watches WHERE client_id = ? AND active = 1",
+                (client_id,),
+            ).fetchone()[0]
+
     def create_watch(
         self, client_id: str, min_edge: float,
         category: str | None = None, kind: str | None = None, event: str | None = None,
     ) -> str:
+        if self.count_active(client_id) >= WATCH_MAX_PER_CLIENT:
+            raise WatchLimitError(
+                f"active watch limit reached ({WATCH_MAX_PER_CLIENT}); "
+                "cancel a watch before adding another"
+            )
         watch_id = "w_" + uuid.uuid4().hex[:12]
         with self._lock, self._connect() as conn:
             conn.execute(
@@ -180,3 +201,73 @@ class WatchStore:
 @lru_cache(maxsize=1)
 def get_watches() -> WatchStore:
     return WatchStore()
+
+
+class AlertEngine:
+    """Background thread that fires watches on an interval (server-side push).
+
+    OFF by default (``ALERT_ENGINE`` unset) so offline tests and serverless
+    deploys stay fully synchronous — there, ``poll_alerts`` fires inline. When
+    enabled, this loop does the firing and ``poll_alerts`` becomes drain-only, so
+    a slow scan never blocks a client's cheap poll. Degrades gracefully: a scan
+    error is swallowed and retried next tick; it never crashes the server.
+    """
+
+    def __init__(self, store: WatchStore, scan_fn, interval: float | None = None):
+        self._store = store
+        self._scan_fn = scan_fn
+        self._interval = interval if interval is not None else float(
+            os.getenv("ALERT_ENGINE_INTERVAL", "30")
+        )
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    @staticmethod
+    def enabled() -> bool:
+        return os.getenv("ALERT_ENGINE", "").lower() in ("1", "on", "true", "yes")
+
+    def start(self) -> "AlertEngine":
+        if self._thread and self._thread.is_alive():
+            return self
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, name="alert-engine", daemon=True)
+        self._thread.start()
+        return self
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def tick(self) -> int:
+        """Run one scan+fire cycle (also used directly by tests)."""
+        try:
+            return self._store.fire(self._scan_fn())
+        except Exception:
+            return 0  # never let a bad scan kill the loop
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            self.tick()
+            # Sleep in small slices so stop() is responsive.
+            waited = 0.0
+            while waited < self._interval and not self._stop.is_set():
+                time.sleep(min(0.5, self._interval - waited))
+                waited += 0.5
+
+
+_ENGINE: AlertEngine | None = None
+_ENGINE_LOCK = threading.Lock()
+
+
+def start_alert_engine(scan_fn) -> AlertEngine | None:
+    """Start the background engine if ``ALERT_ENGINE`` is set. Idempotent."""
+    global _ENGINE
+    if not AlertEngine.enabled():
+        return None
+    with _ENGINE_LOCK:
+        if _ENGINE is None:
+            _ENGINE = AlertEngine(get_watches(), scan_fn).start()
+    return _ENGINE
+
+
+def alert_engine_running() -> bool:
+    return _ENGINE is not None
