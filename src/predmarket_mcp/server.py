@@ -50,6 +50,16 @@ async def health(_request: Request) -> JSONResponse:
     )
 
 
+@mcp.custom_route("/metrics", methods=["GET"])
+async def metrics(_request: Request):
+    """Prometheus-text metrics (request counts, rate-limits, circuit states)."""
+    from starlette.responses import PlainTextResponse
+
+    from .ops import METRICS
+
+    return PlainTextResponse(METRICS.render_prometheus(), media_type="text/plain; version=0.0.4")
+
+
 @mcp.custom_route("/pubkey", methods=["GET"])
 async def pubkey(_request: Request) -> JSONResponse:
     """Public Ed25519 key so anyone can verify signed provenance (Trust v2)."""
@@ -96,13 +106,19 @@ _register()
 
 
 def build_http_app():
-    """Starlette ASGI app for streamable-http, with x402 enforcement middleware.
+    """Starlette ASGI app for streamable-http, with ops + x402 middleware.
 
     Exposed so ``uvicorn`` / ``fastmcp run`` can serve it directly.
     """
-    from .billing.middleware import asgi_middleware
+    from starlette.middleware import Middleware as ASGIMiddleware
 
-    return mcp.http_app(transport="streamable-http", middleware=asgi_middleware())
+    from .billing.middleware import asgi_middleware
+    from .ops import RateLimitMiddleware, configure_logging
+
+    configure_logging()
+    # Rate limit outermost (cheap reject before any work), then x402 enforcement.
+    middleware = [ASGIMiddleware(RateLimitMiddleware), *asgi_middleware()]
+    return mcp.http_app(transport="streamable-http", middleware=middleware)
 
 
 # ASGI entrypoint for `uvicorn predmarket_mcp.server:app`.

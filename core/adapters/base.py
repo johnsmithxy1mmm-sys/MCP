@@ -73,8 +73,19 @@ def fetch_json(base_url: str, path: str, *, params=None, headers=None, venue: st
     This is the single network boundary: connection errors, timeouts, non-200
     statuses, and bad JSON all surface as ``AdapterError`` so callers (the live
     engine) can degrade gracefully instead of crashing a tool. Uses a pooled,
-    keep-alive client per host instead of opening a new connection per call.
+    keep-alive client per host, and a per-host circuit breaker so a dead venue
+    fast-fails instead of costing every call a full timeout.
     """
+    from ..circuit import CircuitOpen, get_breaker
+
+    breaker = get_breaker(venue or base_url)
+    try:
+        return breaker.call(_do_fetch, base_url, path, params, headers, venue)
+    except CircuitOpen as exc:
+        raise AdapterError(f"{venue} circuit open: {exc}") from exc
+
+
+def _do_fetch(base_url: str, path: str, params, headers, venue: str):
     try:
         resp = get_client(base_url).get(path, params=params, headers=headers)
     except httpx.HTTPError as exc:  # connect/proxy/timeout/etc.
