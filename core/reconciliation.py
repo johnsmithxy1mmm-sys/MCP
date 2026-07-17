@@ -154,6 +154,28 @@ class ReconciliationStore:
         with self._lock, self._connect() as conn:
             return conn.execute("SELECT COUNT(*) FROM flagged").fetchone()[0]
 
+    # -- Merkle commitment (Trust v2) -------------------------------------
+    def resolved_records(self) -> list[dict]:
+        """Resolved entries in a deterministic order (for Merkle commitment)."""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT opp_id, ts, kind, title, predicted_edge, realized_edge, outcome "
+                "FROM flagged WHERE resolved = 1 ORDER BY opp_id"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def merkle_commitment(self) -> dict:
+        """A Merkle root committing to every resolved record, so the published
+        track record can't be silently edited after the fact."""
+        from .merkle import merkle_root
+
+        records = self.resolved_records()
+        return {
+            "merkle_root": merkle_root(records),
+            "leaf_count": len(records),
+            "leaf_domain": "sha256(0x00||canonical_json)",
+        }
+
 
 @lru_cache(maxsize=1)
 def get_reconciliation() -> ReconciliationStore:

@@ -75,6 +75,31 @@ def scan_opportunities(
     return _engine.scan_opportunities(min_edge, kind=kind, category=category)
 
 
+def enrich_resolution_risk(opps: list[Opportunity]) -> list[Opportunity]:
+    """Replace the default resolution_risk on the top opportunities with the LLM
+    analyst's structured score (B5). No-op unless ANALYST_ENABLED + a key are set;
+    capped to ANALYST_MAX_ENRICH to bound cost/latency."""
+    import os as _o
+
+    from core.analyst import get_analyst
+
+    analyst = get_analyst()
+    if analyst is None:
+        return opps  # offline default: heuristic 0.02 already set by annotate_risk
+    cap = int(_o.getenv("ANALYST_MAX_ENRICH", "3"))
+    for opp in opps[:cap]:
+        if not opp.legs:
+            continue
+        primary = get_market(opp.legs[0].venue.value, opp.legs[0].market_id)
+        if primary is None:
+            continue
+        try:
+            opp.resolution_risk = analyst.score(primary)["resolution_risk"]
+        except Exception:
+            pass  # enrichment must never break the scan
+    return opps
+
+
 def realizable_edge(legs: list[Leg], size_usd: float) -> ExecutionEstimate:
     return _engine.realizable_edge(legs, size_usd)
 
@@ -110,6 +135,11 @@ def record_flagged(opps: list[Opportunity]) -> None:
 
 def track_record_metrics() -> dict:
     return get_reconciliation().metrics()
+
+
+def track_record_commitment() -> dict:
+    """Merkle root committing to the resolved track record (tamper-evidence)."""
+    return get_reconciliation().merkle_commitment()
 
 
 def resolve_outcomes(outcomes: dict[str, int]) -> int:

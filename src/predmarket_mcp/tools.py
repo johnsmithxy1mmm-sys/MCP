@@ -136,9 +136,12 @@ def register(mcp: FastMCP) -> None:
     )
     def track_record() -> dict:
         metrics = deps.track_record_metrics()
+        commitment = deps.track_record_commitment()  # Merkle root over resolved records
+        signed = {**metrics, "commitment": commitment}
         return {
             "track_record": metrics,
-            "provenance": provenance(metrics),
+            "commitment": commitment,
+            "provenance": provenance(signed),
             **deps.staleness(deps.now()),
             **_cost_note("track_record"),
         }
@@ -221,6 +224,7 @@ def register(mcp: FastMCP) -> None:
         category: Annotated[str | None, Field(description="Optional filter: politics, crypto, economics.")] = None,
     ) -> dict:
         ops = deps.scan_opportunities(min_edge, kind, category)
+        ops = deps.enrich_resolution_risk(ops)  # LLM resolution-risk (if enabled)
         deps.record_flagged(ops)  # track record: flag now, reconcile at resolution
         opportunities = [
             {

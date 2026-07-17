@@ -50,6 +50,33 @@ async def health(_request: Request) -> JSONResponse:
     )
 
 
+@mcp.custom_route("/pubkey", methods=["GET"])
+async def pubkey(_request: Request) -> JSONResponse:
+    """Public Ed25519 key so anyone can verify signed provenance (Trust v2)."""
+    from .provenance import public_key_info
+
+    info = public_key_info()
+    if info is None:
+        return JSONResponse(
+            {"signed": False, "detail": "no Ed25519 signing key configured"}, status_code=404
+        )
+    return JSONResponse({"signed": True, **info})
+
+
+@mcp.custom_route("/track-record", methods=["GET"])
+async def public_track_record(_request: Request) -> JSONResponse:
+    """Public, tamper-evident track record — auditable without an MCP session."""
+    from . import deps
+    from .provenance import provenance as _prov
+
+    metrics = deps.track_record_metrics()
+    commitment = deps.track_record_commitment()
+    signed = {**metrics, "commitment": commitment}
+    return JSONResponse(
+        {"track_record": metrics, "commitment": commitment, "provenance": _prov(signed)}
+    )
+
+
 # --- Registration -------------------------------------------------------------
 # Tools / resources / prompts and billing middleware are registered by importing
 # their modules, which call back into `mcp`. Kept as a function so imports are
