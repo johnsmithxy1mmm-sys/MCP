@@ -116,6 +116,11 @@ class Opportunity(BaseModel):
         default=None,
         description="0..1 haircut for resolution-source / settlement risk.",
     )
+    fair_value: float | None = Field(
+        default=None,
+        description="Liquidity-weighted cross-venue consensus YES probability, "
+        "when known — the anchor the edge is measured against.",
+    )
 
 
 class MatchedPair(BaseModel):

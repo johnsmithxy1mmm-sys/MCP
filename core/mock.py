@@ -290,12 +290,15 @@ def scan_opportunities(
         if net < min_edge:
             continue
         cheap, dear = (a, b) if a.yes_price < b.yes_price else (b, a)
+        from .fairvalue import consensus
+
         out.append(Opportunity(
             kind=OpportunityKind.CROSS_VENUE,
             title=label,
             category=a.category,
             realizable_edge=net,
             max_size_usd=round(min(a.volume_usd or 0, b.volume_usd or 0) * 0.01, 2),
+            fair_value=consensus([a, b]),
             legs=[
                 Leg(venue=cheap.venue, market_id=cheap.market_id, side=Side.YES),
                 Leg(venue=dear.venue, market_id=dear.market_id, side=Side.NO),

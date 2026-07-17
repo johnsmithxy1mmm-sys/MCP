@@ -231,6 +231,7 @@ def register(mcp: FastMCP) -> None:
                 "annualized_edge": o.annualized_edge,
                 "holding_days": o.holding_days,
                 "resolution_risk": o.resolution_risk,
+                "fair_value": o.fair_value,
                 "max_size_usd": o.max_size_usd,
                 "legs": [{"venue": l.venue.value, "market_id": l.market_id, "side": l.side.value} for l in o.legs],
             }
@@ -263,12 +264,17 @@ def register(mcp: FastMCP) -> None:
         if pair is None:
             return {"matched": False, "event": event, **_cost_note("compare_across_venues")}
         cheaper = pair.a if pair.a.yes_price <= pair.b.yes_price else pair.b
+        fair = deps.assess_fair_value([pair.a, pair.b])
         return {
             "matched": True,
             "event": pair.event,
             "confidence": pair.confidence,
             "spread": round(pair.spread, 4),
             "cheaper_yes_venue": cheaper.venue.value,
+            # Consensus fair value + which venue is rich/cheap vs it (not just the gap).
+            "fair_value": fair["fair_value"],
+            "fair_value_confidence": fair["confidence"],
+            "deviations": fair["venues"],
             "markets": [_market_dict(pair.a), _market_dict(pair.b)],
             "realtime": True,
             **deps.staleness(deps.now()),
@@ -281,17 +287,23 @@ def register(mcp: FastMCP) -> None:
         description=(
             "Before you act: given these legs and a dollar size, compute the REALIZABLE "
             "EDGE AFTER fees, gas and slippage from current orderbook depth. Returns "
-            "fillable size, average fill price and net edge so you can decide before "
-            f"trading. Costs {price_str('estimate_execution')} per call."
+            "fillable size, average fill price and net edge. Optionally pass `bankroll_usd` "
+            "and `fair_value` (your probability estimate) to also get the Kelly-optimal "
+            "stake and a market-impact curve (how edge decays as you size up). "
+            f"Costs {price_str('estimate_execution')} per call."
         ),
     )
     def estimate_execution(
         legs: Annotated[list[Leg], Field(description="Legs to execute. Each: {venue, market_id, side: yes|no}.")],
         size_usd: Annotated[float, Field(gt=0, description="Total dollar size you intend to execute.")],
+        bankroll_usd: Annotated[float | None, Field(default=None, gt=0, description="Optional: your bankroll, for a Kelly-sized recommendation.")] = None,
+        fair_value: Annotated[float | None, Field(default=None, ge=0, le=1, description="Optional: your fair YES probability, e.g. 0.62, for Kelly sizing.")] = None,
     ) -> dict:
         est = deps.realizable_edge(legs, size_usd)
+        sizing = deps.execution_sizing(legs, size_usd, bankroll_usd, fair_value)
         return {
             "estimate": est.model_dump(),
+            "sizing": sizing,
             "realtime": True,
             **deps.staleness(deps.now()),
             **_cost_note("estimate_execution"),

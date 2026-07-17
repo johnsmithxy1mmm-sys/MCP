@@ -62,6 +62,13 @@ def match_event(event: str) -> MatchedPair | None:
     return _engine.match_event(event)
 
 
+def assess_fair_value(markets: list[Market]) -> dict:
+    """Cross-venue consensus fair value + per-venue deviation for a set of quotes."""
+    from core.fairvalue import assess
+
+    return assess(markets)
+
+
 def scan_opportunities(
     min_edge: float, kind: str | None, category: str | None
 ) -> list[Opportunity]:
@@ -70,6 +77,16 @@ def scan_opportunities(
 
 def realizable_edge(legs: list[Leg], size_usd: float) -> ExecutionEstimate:
     return _engine.realizable_edge(legs, size_usd)
+
+
+def execution_sizing(
+    legs: list[Leg], size_usd: float,
+    bankroll_usd: float | None = None, fair_value: float | None = None,
+) -> dict:
+    """Kelly stake + market-impact curve for a position (B4)."""
+    from core.sizing import execution_sizing as _sizing
+
+    return _sizing(legs, size_usd, repo.get_orderbook, bankroll_usd, fair_value)
 
 
 # --- reconciliation / track record -----------------------------------------
