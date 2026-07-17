@@ -144,6 +144,11 @@ def list_watches(client_id) -> list[dict]:
     return get_watches().list_watches(client_id)
 
 
+def peek_alerts(client_id) -> list[dict]:
+    """Undelivered alerts WITHOUT draining (backs the alerts:// resource)."""
+    return get_watches().peek(client_id)
+
+
 # --- Staleness helpers ------------------------------------------------------
 def now() -> datetime:
     return datetime.now(timezone.utc)

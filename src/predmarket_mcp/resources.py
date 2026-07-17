@@ -19,6 +19,24 @@ def register(mcp: FastMCP) -> None:
     settings = get_settings()
 
     @mcp.resource(
+        "alerts://{client_id}",
+        description=(
+            "Peek the alerts currently queued for a client's watches WITHOUT "
+            "consuming them (poll_alerts drains; this only reads). Use for a "
+            "subscribe/refresh view; pair with the webhook push for true delivery."
+        ),
+    )
+    def alerts_resource(client_id: str) -> dict:
+        alerts = deps.peek_alerts(client_id)
+        return {
+            "client_id": client_id,
+            "alerts": alerts,
+            "count": len(alerts),
+            "note": "Undelivered alerts; call poll_alerts to consume them.",
+            **deps.staleness(deps.now()),
+        }
+
+    @mcp.resource(
         "market://{venue}/{market_id}",
         description=(
             "Snapshot of one prediction market (normalized YES/NO prices, implied "

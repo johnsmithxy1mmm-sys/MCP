@@ -155,9 +155,11 @@ class WatchStore:
         """Evaluate all active watches against `opps`, queue new matching alerts.
 
         Deduped by (watch_id, opp signature) so a standing opportunity alerts once.
-        Returns the number of new alerts queued.
+        Newly-queued alerts are pushed to the webhook (best effort) so a client
+        gets them without polling. Returns the number of new alerts queued.
         """
         fired = 0
+        new_alerts: list[dict] = []
         with self._lock, self._connect() as conn:
             watches = conn.execute("SELECT * FROM watches WHERE active = 1").fetchall()
             for w in watches:
@@ -170,14 +172,49 @@ class WatchStore:
                         continue
                     if w["event"] and w["event"].lower() not in opp.title.lower():
                         continue
+                    ts = datetime.now(timezone.utc).isoformat()
+                    payload = _opp_payload(opp)
                     cur = conn.execute(
                         "INSERT OR IGNORE INTO alerts (watch_id, opp_sig, client_id, ts, payload) "
                         "VALUES (?, ?, ?, ?, ?)",
-                        (w["watch_id"], _opp_sig(opp), w["client_id"],
-                         datetime.now(timezone.utc).isoformat(), json.dumps(_opp_payload(opp))),
+                        (w["watch_id"], _opp_sig(opp), w["client_id"], ts, json.dumps(payload)),
                     )
-                    fired += cur.rowcount
+                    if cur.rowcount:
+                        fired += cur.rowcount
+                        new_alerts.append({
+                            "watch_id": w["watch_id"], "client_id": w["client_id"],
+                            "ts": ts, "opportunity": payload,
+                        })
+        if new_alerts:
+            self._push(new_alerts)
         return fired
+
+    @staticmethod
+    def _push(new_alerts: list[dict]) -> None:
+        """Best-effort webhook push of newly-queued alerts (never raises)."""
+        try:
+            from .notifier import notify_alerts
+
+            notify_alerts(new_alerts)
+        except Exception:  # push must never break firing
+            pass
+
+    def peek(self, client_id: str) -> list[dict]:
+        """Return this client's undelivered alerts WITHOUT marking them delivered.
+
+        Backs the ``alerts://{client_id}`` resource (subscribe/peek), so reading
+        the resource doesn't consume alerts the way ``drain`` (poll_alerts) does.
+        """
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT watch_id, ts, payload FROM alerts "
+                "WHERE client_id = ? AND delivered = 0 ORDER BY ts",
+                (client_id,),
+            ).fetchall()
+        return [
+            {"watch_id": r["watch_id"], "ts": r["ts"], "opportunity": json.loads(r["payload"])}
+            for r in rows
+        ]
 
     def drain(self, client_id: str) -> list[dict]:
         """Return this client's undelivered alerts and mark them delivered."""

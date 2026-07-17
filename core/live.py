@@ -147,6 +147,18 @@ class LiveRepo:
 repo = LiveRepo()
 
 
+def _stream_sink(venue: str, market_id: str, yes_price: float) -> None:
+    """Invalidate the cached market list on a live tick so the next fetch is fresh."""
+    repo._markets._store.clear()
+
+
+# Real-time ingestion (STREAMING=on). Off by default; writes ticks into the same
+# history store the delayed free tier and get_market_history read from.
+from .streaming import start_streaming  # noqa: E402
+
+start_streaming(sink=_stream_sink)
+
+
 # --- engine surface (mirrors core.mock) -------------------------------------
 def match_event(event: str) -> MatchedPair | None:
     return algorithms.best_match(repo._all_markets(event), event)
