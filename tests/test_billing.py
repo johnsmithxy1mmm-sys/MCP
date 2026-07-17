@@ -152,6 +152,55 @@ async def test_underpayment_is_rejected(tmp_path):
     assert "insufficient" in json.loads(body).get("error_detail", "")
 
 
+def _valid_header(billing, value="50000", to="0xop"):
+    return encode_payment_header({
+        "scheme": "exact", "network": billing.settings.x402_network,
+        "payload": {"signature": "0xsig",
+                    "authorization": {"from": "0xpayer", "to": to, "value": value}},
+    })
+
+
+def _batch_body(*names_args) -> bytes:
+    return json.dumps([
+        {"jsonrpc": "2.0", "id": i, "method": "tools/call",
+         "params": {"name": n, "arguments": a}}
+        for i, (n, a) in enumerate(names_args)
+    ]).encode()
+
+
+@pytest.mark.asyncio
+async def test_replayed_payment_is_rejected(tmp_path):
+    """A1: the same signed X-PAYMENT can be used exactly once."""
+    billing = _paid_billing(tmp_path)
+    mw = X402Middleware(_ok_downstream, billing)
+    header = _valid_header(billing)
+    body = _tool_call_body("find_mispricing", {"min_edge": 0.02})
+    first, _ = await _run_asgi(mw, body, [(b"x-payment", header.encode())])
+    second, resp = await _run_asgi(mw, body, [(b"x-payment", header.encode())])
+    assert first == 200
+    assert second == 402
+    assert json.loads(resp).get("error_detail") == "payment_reused"
+    assert billing.receipts.count() == 1  # only the first settled
+
+
+@pytest.mark.asyncio
+async def test_batch_must_pay_the_sum(tmp_path):
+    """A2: N paid calls in one request need one payment covering their sum."""
+    billing = _paid_billing(tmp_path)
+    mw = X402Middleware(_ok_downstream, billing)
+    # find_mispricing ($0.05) + compare_across_venues ($0.02) = $0.07 = 70000 atomic.
+    batch = _batch_body(
+        ("find_mispricing", {"min_edge": 0.02}),
+        ("compare_across_venues", {"event": "btc"}),
+    )
+    # Paying only for one tool ($0.05) is rejected as underpayment.
+    under, ubody = await _run_asgi(mw, batch, [(b"x-payment", _valid_header(billing, "50000").encode())])
+    assert under == 402 and "insufficient" in json.loads(ubody).get("error_detail", "")
+    # Paying the full sum passes.
+    ok, _ = await _run_asgi(mw, batch, [(b"x-payment", _valid_header(billing, "70000").encode())])
+    assert ok == 200
+
+
 @pytest.mark.asyncio
 async def test_free_tool_bypasses_gate(tmp_path):
     billing = _paid_billing(tmp_path)
@@ -168,6 +217,30 @@ async def test_gate_off_lets_paid_tool_through(tmp_path):
     mw = X402Middleware(_ok_downstream, billing)
     status, _ = await _run_asgi(mw, _tool_call_body("find_mispricing", {"min_edge": 0.02}), [])
     assert status == 200
+
+
+# --- privacy (A3) -----------------------------------------------------------
+def test_client_fingerprint_never_stores_raw_secret():
+    from predmarket_mcp.billing.middleware import client_fingerprint
+
+    assert client_fingerprint({"x-client-id": "acme"}) == "acme"
+    fp = client_fingerprint({"authorization": "Bearer super-secret"})
+    assert fp.startswith("auth-") and "super-secret" not in fp
+    assert client_fingerprint({}) is None
+
+
+@pytest.mark.asyncio
+async def test_metering_stores_param_shape_not_values(client):
+    import json as _json
+    from predmarket_mcp.billing.middleware import get_billing
+
+    billing = get_billing()
+    before = billing.metering.count()
+    await client.call_tool("find_mispricing", {"min_edge": 0.02})
+    rec = billing.metering.records()[-1]
+    assert billing.metering.count() == before + 1
+    params = _json.loads(rec["params"])
+    assert params == {"keys": ["min_edge"], "count": 1}  # shape only, no value 0.02
 
 
 # --- pricing sanity ---------------------------------------------------------

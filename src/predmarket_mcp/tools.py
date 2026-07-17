@@ -52,14 +52,31 @@ def _cost_note(tool_name: str) -> dict:
 
 
 def _client_id() -> str:
-    """Stable-per-caller id for watches/alerts, from HTTP headers (else anon)."""
+    """Stable-per-caller id for watches/alerts — never a shared "anonymous".
+
+    A shared bucket would let one caller drain another's alerts (deliver-once).
+    Prefer x-client-id; else hash the auth token (never store it raw); else
+    derive an ephemeral id from ip+user-agent so distinct callers stay isolated.
+    """
+    import hashlib
+
     try:
         from fastmcp.server.dependencies import get_http_headers
 
         headers = get_http_headers(include_all=True) or {}
     except Exception:
         headers = {}
-    return headers.get("x-client-id") or headers.get("authorization") or "anonymous"
+    cid = headers.get("x-client-id")
+    if cid:
+        return cid
+    auth = headers.get("authorization")
+    if auth:
+        return "auth-" + hashlib.sha256(auth.encode()).hexdigest()[:16]
+    ip = headers.get("x-forwarded-for", "").split(",")[0].strip()
+    ua = headers.get("user-agent", "")
+    if ip or ua:
+        return "anon-" + hashlib.sha256(f"{ip}|{ua}".encode()).hexdigest()[:16]
+    return "anon-local"
 
 
 def register(mcp: FastMCP) -> None:
@@ -130,10 +147,11 @@ def register(mcp: FastMCP) -> None:
         tags={"free"},
         meta=_paid_meta("evaluate_market"),
         description=(
-            "Get normalized YES/NO prices, implied probability, and orderbook depth "
-            "for one market. FREE TIER RETURNS DELAYED DATA (~60s; see `as_of` / "
-            "`data_age_seconds`). Realtime is available on the paid tools. Call to "
-            "judge whether a single market is worth acting on."
+            "Get normalized YES/NO prices and implied probability for one market. "
+            "FREE TIER RETURNS A GENUINELY DELAYED PRICE (~60s old, read from the "
+            "history store; `as_of` is the true snapshot time, `delayed: true`). "
+            "Realtime prices and live orderbook depth are paid (estimate_execution / "
+            "find_mispricing). Call to judge whether a market is worth acting on."
         ),
     )
     def evaluate_market(
@@ -143,21 +161,41 @@ def register(mcp: FastMCP) -> None:
         market = deps.get_market(venue, market_id)
         if market is None:
             return {"error": "market_not_found", "venue": venue, "market_id": market_id}
-        book = deps.get_orderbook(venue, market_id)
-        # Free tier: intentionally delay the snapshot and mark it as such.
-        delay = timedelta(seconds=settings.free_tier_delay_seconds)
-        as_of = deps.now() - delay
-        depth = None
-        if book:
-            depth = {
-                "yes_asks": [{"price": l.price, "size_usd": l.size_usd} for l in book.yes_asks[:5]],
-                "yes_bids": [{"price": l.price, "size_usd": l.size_usd} for l in book.yes_bids[:5]],
+        now = deps.now()
+        delay = settings.free_tier_delay_seconds
+        # Honest delay: serve a real historical point at least `delay` seconds
+        # old, with its true timestamp — never backdate live data.
+        points = deps.get_history(
+            venue, market_id, now - timedelta(hours=6), now - timedelta(seconds=delay)
+        )
+        if points:
+            p = points[-1]
+            yes = p.yes_price
+            return {
+                "market": {
+                    "venue": market.venue.value,
+                    "market_id": market.market_id,
+                    "title": market.title,
+                    "category": market.category,
+                    "yes_price": yes,
+                    "no_price": round(1.0 - yes, 4),
+                    "implied_probability": yes,
+                },
+                "delayed": True,
+                "realtime": False,
+                "note": f"Free tier: price ~{delay}s delayed from the history store; "
+                        "realtime + orderbook depth are paid.",
+                **deps.staleness(p.ts),
+                **_cost_note("evaluate_market"),
             }
+        # No delayed snapshot exists yet — be honest, don't fabricate staleness.
         return {
             "market": _market_dict(market),
-            "orderbook": depth,
+            "delayed": False,
             "realtime": False,
-            **deps.staleness(as_of),
+            "note": "No delayed snapshot available yet; showing the latest with an "
+                    "accurate as_of (not backdated).",
+            **deps.staleness(now),
             **_cost_note("evaluate_market"),
         }
 

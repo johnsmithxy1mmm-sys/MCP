@@ -16,11 +16,13 @@ but does not gate at launch (usage first, billing later).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from dataclasses import dataclass
 from functools import lru_cache
 
+import anyio
 from starlette.middleware import Middleware as ASGIMiddleware
 
 from fastmcp import FastMCP
@@ -32,14 +34,31 @@ from .metering import UsageRecord, build_backend
 from .tiers import Pricing, load_pricing
 from .x402 import (
     Facilitator,
+    NonceStore,
     PaymentError,
     PaymentRequirement,
     ReceiptStore,
     build_facilitator,
     decode_payment_header,
+    payment_fingerprint,
 )
 
 PAYMENT_HEADER = "x-payment"
+
+
+def client_fingerprint(headers: dict[str, str]) -> str | None:
+    """Stable, privacy-preserving caller id — never the raw secret.
+
+    x-client-id verbatim; otherwise a hash of the Authorization header (so the
+    bearer token is never persisted); else None.
+    """
+    cid = headers.get("x-client-id")
+    if cid:
+        return cid
+    auth = headers.get("authorization")
+    if auth:
+        return "auth-" + hashlib.sha256(auth.encode()).hexdigest()[:16]
+    return None
 
 
 # --- shared, process-wide billing state -------------------------------------
@@ -51,6 +70,7 @@ class BillingContext:
         self.pricing: Pricing = load_pricing()
         self.metering = build_backend(settings)
         self.receipts = ReceiptStore(settings.metering_db_url)
+        self.nonces = NonceStore(settings.metering_db_url)
         self.facilitator: Facilitator = build_facilitator(settings)
 
     # -- gating helpers ----------------------------------------------------
@@ -60,25 +80,38 @@ class BillingContext:
     def is_paid(self, tool_name: str) -> bool:
         return self.pricing.is_paid(tool_name)
 
-    def requirement(self, tool_name: str) -> PaymentRequirement:
-        p = self.pricing.get(tool_name)
+    def requirement(self, tool_names: list[str] | str) -> PaymentRequirement:
+        """Payment requirement for one paid call — or a batch (sum of prices)."""
+        names = [tool_names] if isinstance(tool_names, str) else list(tool_names)
+        total = sum(self.pricing.get(n).price_usd for n in names)
         return PaymentRequirement(
-            tool_name=tool_name,
-            price_usd=p.price_usd,
+            tool_name="+".join(names),
+            price_usd=round(total, 6),
             currency=self.pricing.currency,
             network=self.settings.x402_network,
             pay_to=self.settings.operator_wallet,
         )
 
-    def check_x402(self, tool_name: str, headers: dict[str, str]) -> "PaymentDecision":
-        """Verify payment for a paid tool. Saves a receipt on success."""
-        requirement = self.requirement(tool_name)
+    def check_x402(self, tool_names: list[str] | str, headers: dict[str, str]) -> "PaymentDecision":
+        """Verify payment for paid tool call(s). Replay-safe; one receipt on success.
+
+        A batch of N paid calls requires ONE payment covering the SUM of their
+        prices. A previously-consumed signed payment is rejected (replay).
+        """
+        requirement = self.requirement(tool_names)
         raw = headers.get(PAYMENT_HEADER)
         if not raw:
             return PaymentDecision(ok=False, challenge=requirement.to_challenge())
         try:
             payment = decode_payment_header(raw)
+            fingerprint = payment_fingerprint(payment)
+            # Replay check BEFORE settlement — a reused header must never reach
+            # the facilitator's /settle. mark_used after verify closes the race.
+            if self.nonces.is_used(fingerprint):
+                raise PaymentError("payment_reused")
             receipt = self.facilitator.verify_and_settle(payment, requirement)
+            if not self.nonces.mark_used(fingerprint):
+                raise PaymentError("payment_reused")
         except PaymentError as exc:
             challenge = requirement.to_challenge()
             challenge["error_detail"] = str(exc)
@@ -117,7 +150,11 @@ class MeteringMiddleware(Middleware):
             paid_via = "apikey"
 
         pricing = self.billing.pricing.get(tool_name)
-        client_id = headers.get("x-client-id") or headers.get("authorization")
+        client_id = client_fingerprint(headers)  # hashed — never the raw secret
+        args = dict(context.message.arguments or {})
+        # Privacy: never persist raw argument VALUES (they can carry anything);
+        # keep only the shape — enough for usage analytics and billing disputes.
+        params_meta = {"keys": sorted(args.keys()), "count": len(args)}
         start = time.perf_counter()
         status = "ok"
         try:
@@ -128,18 +165,18 @@ class MeteringMiddleware(Middleware):
             raise
         finally:
             latency_ms = round((time.perf_counter() - start) * 1000, 2)
-            self.billing.metering.record(
-                UsageRecord(
-                    tool_name=tool_name,
-                    price_usd=pricing.price_usd,
-                    currency=self.billing.pricing.currency,
-                    status=status,
-                    latency_ms=latency_ms,
-                    client_id=client_id,
-                    paid_via=paid_via,
-                    params=dict(context.message.arguments or {}),
-                )
+            usage = UsageRecord(
+                tool_name=tool_name,
+                price_usd=pricing.price_usd,
+                currency=self.billing.pricing.currency,
+                status=status,
+                latency_ms=latency_ms,
+                client_id=client_id,
+                paid_via=paid_via,
+                params=params_meta,
             )
+            # SQLite write off the event loop.
+            await anyio.to_thread.run_sync(self.billing.metering.record, usage)
 
 
 # --- raw ASGI middleware: real HTTP 402 enforcement -------------------------
@@ -158,12 +195,16 @@ class X402Middleware:
             return await self.app(scope, receive, send)
 
         body, messages = await _buffer_body(receive)
-        tool_name = _paid_tool_call(body, self.billing)
-        if tool_name is None:
+        tool_names = _paid_tool_calls(body, self.billing)
+        if not tool_names:
             return await self.app(scope, _replay(messages, receive), send)
 
         headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
-        decision = self.billing.check_x402(tool_name, headers)
+        # Payment verification does SQLite + (possibly) facilitator HTTP —
+        # run it off the event loop.
+        decision = await anyio.to_thread.run_sync(
+            self.billing.check_x402, tool_names, headers
+        )
         if not decision.ok:
             return await _send_402(send, decision.challenge)
         return await self.app(scope, _replay(messages, receive), send)
@@ -202,19 +243,25 @@ def _replay(messages, original_receive):
     return receive
 
 
-def _paid_tool_call(body: bytes, billing: BillingContext) -> str | None:
+def _paid_tool_calls(body: bytes, billing: BillingContext) -> list[str]:
+    """Every paid tool named in the request (a JSON-RPC batch may hold several).
+
+    Returning ALL of them — not just the first — is what stops a batch from
+    paying for one call and getting the rest free.
+    """
     try:
         payload = json.loads(body or b"{}")
     except json.JSONDecodeError:
-        return None
+        return []
     calls = payload if isinstance(payload, list) else [payload]
+    names: list[str] = []
     for call in calls:
         if not isinstance(call, dict) or call.get("method") != "tools/call":
             continue
         name = (call.get("params") or {}).get("name")
         if name and billing.is_paid(name):
-            return name
-    return None
+            names.append(name)
+    return names
 
 
 async def _send_402(send, challenge: dict):

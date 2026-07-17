@@ -16,6 +16,7 @@ Secrets (operator wallet, facilitator URL) come from the environment only.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import sqlite3
 import threading
@@ -32,6 +33,29 @@ USDC_DECIMALS = 6
 
 def _to_atomic(usd: float) -> int:
     return int(round(usd * (10 ** USDC_DECIMALS)))
+
+
+def payment_fingerprint(payment: dict) -> str:
+    """Deterministic id of a signed payment, for replay detection.
+
+    Keyed on the signature + authorization (which carries the EIP-3009 nonce),
+    so re-presenting the same signed X-PAYMENT yields the same fingerprint.
+    """
+    payload = payment.get("payload") or {}
+    key = json.dumps(
+        {"sig": payload.get("signature"), "auth": payload.get("authorization")},
+        sort_keys=True,
+        default=str,
+    )
+    return hashlib.sha256(key.encode()).hexdigest()
+
+
+def _sqlite_path_of(db_url: str) -> str:
+    if db_url.startswith("sqlite:///"):
+        return db_url[len("sqlite:///"):]
+    if db_url.startswith("sqlite://"):
+        return db_url[len("sqlite://"):]
+    return str(Path.cwd() / "metering.db")
 
 
 # --- data types -------------------------------------------------------------
@@ -308,3 +332,46 @@ class ReceiptStore:
     def all(self) -> list[dict]:
         with self._lock, self._connect() as conn:
             return [dict(r) for r in conn.execute("SELECT * FROM receipts ORDER BY ts")]
+
+
+# --- replay protection ------------------------------------------------------
+class NonceStore:
+    """Records accepted payment fingerprints so a signed X-PAYMENT can't be
+    replayed. Without this, one signed header buys unlimited paid calls."""
+
+    def __init__(self, db_url: str):
+        self._lock = threading.Lock()
+        self._path = _sqlite_path_of(db_url)
+        self._init_db()
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self._path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _init_db(self) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS used_payments "
+                "(fingerprint TEXT PRIMARY KEY, ts TEXT NOT NULL)"
+            )
+
+    def is_used(self, fingerprint: str) -> bool:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM used_payments WHERE fingerprint = ?", (fingerprint,)
+            ).fetchone()
+            return row is not None
+
+    def mark_used(self, fingerprint: str) -> bool:
+        """Return True if newly recorded (accept), False if already seen (replay)."""
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO used_payments (fingerprint, ts) VALUES (?, ?)",
+                (fingerprint, datetime.now(timezone.utc).isoformat()),
+            )
+            return cur.rowcount > 0
+
+    def count(self) -> int:
+        with self._lock, self._connect() as conn:
+            return conn.execute("SELECT COUNT(*) FROM used_payments").fetchone()[0]
