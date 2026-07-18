@@ -94,6 +94,17 @@ def backtest_strategy(
     return simulate(points, params)
 
 
+def microstructure(venue: str, market_id: str) -> dict | None:
+    """Informed-flow microstructure read from recent price history (C8)."""
+    from datetime import timedelta
+
+    from core.microstructure import compute
+
+    end = now()
+    points = get_history(venue, market_id, end - timedelta(days=7), end)
+    return compute(points)
+
+
 _CRYPTO_CCY = {"bitcoin": "BTC", "btc": "BTC", "ethereum": "ETH", "eth": "ETH"}
 
 

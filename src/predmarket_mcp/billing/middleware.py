@@ -80,10 +80,15 @@ class BillingContext:
     def is_paid(self, tool_name: str) -> bool:
         return self.pricing.is_paid(tool_name)
 
-    def requirement(self, tool_names: list[str] | str) -> PaymentRequirement:
-        """Payment requirement for one paid call — or a batch (sum of prices)."""
-        names = [tool_names] if isinstance(tool_names, str) else list(tool_names)
-        total = sum(self.pricing.get(n).price_usd for n in names)
+    def requirement(self, calls: list[tuple[str, dict]]) -> PaymentRequirement:
+        """Payment requirement for one paid call — or a batch (sum of prices).
+
+        Each call is ``(tool_name, arguments)``; the amount is value-based
+        (``price_for``) so e.g. a wider history query costs more. The total is the
+        sum across the batch, so N calls need one payment covering all N.
+        """
+        names = [name for name, _ in calls]
+        total = sum(self.pricing.price_for(name, args) for name, args in calls)
         return PaymentRequirement(
             tool_name="+".join(names),
             price_usd=round(total, 6),
@@ -92,13 +97,13 @@ class BillingContext:
             pay_to=self.settings.operator_wallet,
         )
 
-    def check_x402(self, tool_names: list[str] | str, headers: dict[str, str]) -> "PaymentDecision":
+    def check_x402(self, calls: list[tuple[str, dict]], headers: dict[str, str]) -> "PaymentDecision":
         """Verify payment for paid tool call(s). Replay-safe; one receipt on success.
 
         A batch of N paid calls requires ONE payment covering the SUM of their
-        prices. A previously-consumed signed payment is rejected (replay).
+        (value-based) prices. A previously-consumed signed payment is rejected.
         """
-        requirement = self.requirement(tool_names)
+        requirement = self.requirement(calls)
         raw = headers.get(PAYMENT_HEADER)
         if not raw:
             return PaymentDecision(ok=False, challenge=requirement.to_challenge())
@@ -149,9 +154,10 @@ class MeteringMiddleware(Middleware):
         elif self.billing.settings.paid_enabled and self.billing.settings.payment_rail == "apikey":
             paid_via = "apikey"
 
-        pricing = self.billing.pricing.get(tool_name)
         client_id = client_fingerprint(headers)  # hashed — never the raw secret
         args = dict(context.message.arguments or {})
+        # Charge the value-based amount (matches what the x402 gate enforces).
+        charged = self.billing.pricing.price_for(tool_name, args)
         # Privacy: never persist raw argument VALUES (they can carry anything);
         # keep only the shape — enough for usage analytics and billing disputes.
         params_meta = {"keys": sorted(args.keys()), "count": len(args)}
@@ -167,7 +173,7 @@ class MeteringMiddleware(Middleware):
             latency_ms = round((time.perf_counter() - start) * 1000, 2)
             usage = UsageRecord(
                 tool_name=tool_name,
-                price_usd=pricing.price_usd,
+                price_usd=charged,
                 currency=self.billing.pricing.currency,
                 status=status,
                 latency_ms=latency_ms,
@@ -195,15 +201,15 @@ class X402Middleware:
             return await self.app(scope, receive, send)
 
         body, messages = await _buffer_body(receive)
-        tool_names = _paid_tool_calls(body, self.billing)
-        if not tool_names:
+        calls = _paid_tool_calls(body, self.billing)
+        if not calls:
             return await self.app(scope, _replay(messages, receive), send)
 
         headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
         # Payment verification does SQLite + (possibly) facilitator HTTP —
         # run it off the event loop.
         decision = await anyio.to_thread.run_sync(
-            self.billing.check_x402, tool_names, headers
+            self.billing.check_x402, calls, headers
         )
         if not decision.ok:
             return await _send_402(send, decision.challenge)
@@ -243,25 +249,26 @@ def _replay(messages, original_receive):
     return receive
 
 
-def _paid_tool_calls(body: bytes, billing: BillingContext) -> list[str]:
-    """Every paid tool named in the request (a JSON-RPC batch may hold several).
-
-    Returning ALL of them — not just the first — is what stops a batch from
-    paying for one call and getting the rest free.
+def _paid_tool_calls(body: bytes, billing: BillingContext) -> list[tuple[str, dict]]:
+    """Every paid (tool_name, arguments) in the request (a JSON-RPC batch may hold
+    several). Returning ALL of them — with their args, for value-based pricing —
+    is what stops a batch from paying for one call and getting the rest free.
     """
     try:
         payload = json.loads(body or b"{}")
     except json.JSONDecodeError:
         return []
-    calls = payload if isinstance(payload, list) else [payload]
-    names: list[str] = []
-    for call in calls:
+    entries = payload if isinstance(payload, list) else [payload]
+    calls: list[tuple[str, dict]] = []
+    for call in entries:
         if not isinstance(call, dict) or call.get("method") != "tools/call":
             continue
-        name = (call.get("params") or {}).get("name")
+        params = call.get("params") or {}
+        name = params.get("name")
         if name and billing.is_paid(name):
-            names.append(name)
-    return names
+            args = params.get("arguments") or {}
+            calls.append((name, args if isinstance(args, dict) else {}))
+    return calls
 
 
 async def _send_402(send, challenge: dict):

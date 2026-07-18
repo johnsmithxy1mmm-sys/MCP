@@ -168,6 +168,8 @@ def register(mcp: FastMCP) -> None:
         delay = settings.free_tier_delay_seconds
         # Real-money cross-check vs the options market (opt-in; None when off).
         options = deps.options_divergence(market)
+        # Microstructure / informed-flow read from recent history (None if sparse).
+        micro = deps.microstructure(venue, market_id)
         # Honest delay: serve a real historical point at least `delay` seconds
         # old, with its true timestamp — never backdate live data.
         points = deps.get_history(
@@ -189,6 +191,7 @@ def register(mcp: FastMCP) -> None:
                 # History-calibrated probability (identity until enough outcomes resolve).
                 "calibration": deps.calibrate_probability(yes, market.category),
                 **({"options": options} if options else {}),
+                **({"microstructure": micro} if micro else {}),
                 "delayed": True,
                 "realtime": False,
                 "note": f"Free tier: price ~{delay}s delayed from the history store; "
