@@ -50,6 +50,18 @@ def test_evm_anchor_signs_and_submits():
     assert ("eth_sendRawTransaction", ["0xdeadbeefraw"]) in sent
 
 
+def test_chain_id_env_accepts_decimal_and_hex(monkeypatch):
+    # ANCHOR_CHAIN_ID is human-entered: "8453" (decimal) and "0x2105" (hex) are
+    # the SAME chain (Base) and must produce the same signed chainId.
+    for raw in ("8453", "0x2105"):
+        monkeypatch.setenv("ANCHOR_CHAIN_ID", raw)
+        signer = _FakeSigner()
+        a = EvmChainAnchor("https://rpc", "base", signer=signer, rpc=_fake_rpc([]))
+        assert a.submit("aa" * 32) is not None
+        assert signer.signed["chainId"] == 8453, f"raw={raw!r}"
+    monkeypatch.delenv("ANCHOR_CHAIN_ID", raising=False)
+
+
 def test_evm_anchor_degrades_without_signer():
     a = EvmChainAnchor("https://rpc", "base-sepolia", private_key=None)
     assert a.submit("aa" * 32) is None  # no key/lib -> degrade, never crash

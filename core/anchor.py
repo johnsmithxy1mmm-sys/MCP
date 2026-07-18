@@ -121,7 +121,11 @@ class EvmChainAnchor(ChainAnchor):
         try:
             addr = signer.address
             nonce = int(self._call_rpc("eth_getTransactionCount", [addr, "pending"]), 16)
-            chain_id = int(os.getenv("ANCHOR_CHAIN_ID") or self._call_rpc("eth_chainId", []), 16)
+            # Env override is human-entered: accept decimal ("8453") or 0x-hex
+            # ("0x2105") via base 0. The RPC result is always 0x-hex.
+            chain_env = os.getenv("ANCHOR_CHAIN_ID")
+            chain_id = (int(chain_env, 0) if chain_env
+                        else int(self._call_rpc("eth_chainId", []), 16))
             base_fee = self._base_fee()
             tip = self._priority_fee()
             tx = {

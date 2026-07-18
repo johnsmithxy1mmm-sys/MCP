@@ -407,15 +407,17 @@ def register(mcp: FastMCP) -> None:
         size_usd: Annotated[float, Field(gt=0, description="Position size per trade.")] = 1000.0,
     ) -> dict:
         from core.backtest import BacktestParams
-        from core.models import Venue
 
         try:
             frm = _parse_iso(from_ts)
             to = _parse_iso(to_ts)
         except ValueError:
             return {"error": "bad_timestamp", "hint": "Use ISO-8601, e.g. 2026-06-01T00:00:00Z."}
-        venue_enum = Venue.POLYMARKET if venue == "polymarket" else (
-            Venue.KALSHI if venue == "kalshi" else Venue.MANIFOLD)
+        try:
+            venue_enum = Venue(venue)  # reject typos instead of silently guessing
+        except ValueError:
+            return {"error": "unknown_venue",
+                    "hint": "Use one of: " + ", ".join(v.value for v in Venue)}
         params = BacktestParams(
             entry_edge=entry_edge, exit_edge=exit_edge, window=window,
             size_usd=size_usd, venue=venue_enum,

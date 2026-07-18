@@ -62,9 +62,23 @@ class FakeRedis:
         lst = self.l.get(key, [])
         return lst[start:] if end == -1 else lst[start:end + 1]
 
+    def ltrim(self, key, start, end):
+        lst = self.l.get(key, [])
+        stop = len(lst) if end == -1 else end + 1
+        begin = max(0, len(lst) + start) if start < 0 else start
+        self.l[key] = lst[begin:stop]
+        return True
+
+    def expire(self, key, seconds):
+        self.expired = getattr(self, "expired", {})
+        self.expired[key] = seconds
+        return True
+
     def delete(self, key):
-        existed = key in self.l
+        existed = key in self.l or key in self.h or key in self.s
         self.l.pop(key, None)
+        self.h.pop(key, None)
+        self.s.pop(key, None)
         return 1 if existed else 0
 
     def pipeline(self, transaction=True):
@@ -150,6 +164,41 @@ def test_peek_does_not_consume():
     assert len(store.peek("c1")) == 1     # idempotent
     assert len(store.drain("c1")) == 1
     assert store.peek("c1") == []
+
+
+def test_cancel_cleans_up_all_keys(monkeypatch):
+    monkeypatch.setattr("core.notifier.notify_alerts", lambda alerts: True)
+    redis = FakeRedis()
+    store = RedisWatchStore(redis)
+    wid = store.create_watch("c1", 0.01)
+    store.fire([_opp()])  # creates the aseen dedup set
+    assert store.cancel_watch("c1", wid) is True
+    # No leaked hash or dedup set after cancel (random ids are never reused).
+    assert redis.h.get(f"w:{wid}") is None
+    assert redis.s.get(f"aseen:{wid}") is None
+
+
+def test_seen_set_gets_a_ttl(monkeypatch):
+    monkeypatch.setattr("core.notifier.notify_alerts", lambda alerts: True)
+    redis = FakeRedis()
+    store = RedisWatchStore(redis)
+    wid = store.create_watch("c1", 0.01)
+    store.fire([_opp()])
+    assert redis.expired.get(f"aseen:{wid}", 0) > 0  # dedup set expires eventually
+
+
+def test_alert_queue_is_capped(monkeypatch):
+    import core.watches as w
+
+    monkeypatch.setattr("core.notifier.notify_alerts", lambda alerts: True)
+    monkeypatch.setattr(w, "ALERT_QUEUE_MAX", 3)
+    store = RedisWatchStore(FakeRedis())
+    store.create_watch("c1", 0.01)
+    # 5 distinct opportunities; a never-polling client keeps only the newest 3.
+    store.fire([_opp(title=f"opp {i}") for i in range(5)])
+    alerts = store.peek("c1")
+    assert len(alerts) == 3
+    assert alerts[-1]["opportunity"]["title"] == "opp 4"  # newest kept
 
 
 def test_get_watches_picks_redis_when_available(monkeypatch):

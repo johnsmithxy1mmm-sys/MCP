@@ -32,6 +32,11 @@ from .models import Opportunity
 # Per-client cap on active watches, so one caller can't register unbounded
 # standing scans (each watch is evaluated on every fire).
 WATCH_MAX_PER_CLIENT = int(os.getenv("WATCH_MAX_PER_CLIENT", "50"))
+# Redis hygiene: dedup-set TTL (an opp re-alerts after this — acceptable) and a
+# cap on a client's alert queue (a client that never polls can't grow memory
+# without bound; oldest alerts are dropped first).
+WATCH_SEEN_TTL = int(os.getenv("WATCH_SEEN_TTL_SECONDS", str(7 * 24 * 3600)))
+ALERT_QUEUE_MAX = int(os.getenv("ALERT_QUEUE_MAX", "1000"))
 
 
 class WatchLimitError(RuntimeError):
@@ -288,9 +293,12 @@ class RedisWatchStore:
         h = self._redis.hgetall(self._wkey(watch_id))
         if not h or h.get("client_id") != client_id or h.get("active") != "1":
             return False  # unknown, not yours, or already cancelled
-        self._redis.hset(self._wkey(watch_id), "active", "0")
+        # Full cleanup: ids are random uuids, so nothing references a cancelled
+        # watch — leaving the hash + dedup set behind would leak Redis memory.
         self._redis.srem(self._client_set(client_id), watch_id)
         self._redis.srem("watches:active", watch_id)
+        self._redis.delete(self._wkey(watch_id))
+        self._redis.delete(self._seen(watch_id))
         return True
 
     @staticmethod
@@ -323,10 +331,15 @@ class RedisWatchStore:
                     continue
                 if not self._redis.sadd(self._seen(wid), _opp_sig(opp)):
                     continue  # already alerted for this watch+opportunity
+                # Refresh the dedup-set TTL so it expires only after inactivity.
+                self._redis.expire(self._seen(wid), WATCH_SEEN_TTL)
                 ts = datetime.now(timezone.utc).isoformat()
                 payload = _opp_payload(opp)
                 item = {"watch_id": wid, "ts": ts, "opportunity": payload}
-                self._redis.rpush(self._queue(w["client_id"]), json.dumps(item))
+                queue = self._queue(w["client_id"])
+                self._redis.rpush(queue, json.dumps(item))
+                # Cap the queue: a client that never polls keeps only the newest N.
+                self._redis.ltrim(queue, -ALERT_QUEUE_MAX, -1)
                 fired += 1
                 new_alerts.append({**item, "client_id": w["client_id"]})
         if new_alerts:

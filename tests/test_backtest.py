@@ -64,6 +64,16 @@ async def test_simulate_strategy_tool(client):
 
 
 @pytest.mark.asyncio
+async def test_simulate_strategy_unknown_venue(client):
+    r = (await client.call_tool("simulate_strategy", {
+        "venue": "polymrket",  # typo must error, not silently map to another venue
+        "market_id": "m", "from_ts": "2026-06-01T00:00:00Z", "to_ts": "2026-07-01T00:00:00Z",
+    })).data
+    assert r["error"] == "unknown_venue"
+    assert "polymarket" in r["hint"]
+
+
+@pytest.mark.asyncio
 async def test_simulate_strategy_bad_timestamp(client):
     r = (await client.call_tool("simulate_strategy", {
         "venue": "polymarket", "market_id": "pm-btc-100k-2026",
