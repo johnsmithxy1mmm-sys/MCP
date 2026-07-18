@@ -237,6 +237,8 @@ def register(mcp: FastMCP) -> None:
     ) -> dict:
         ops = deps.scan_opportunities(min_edge, kind, category)
         ops = deps.enrich_resolution_risk(ops)  # LLM resolution-risk (if enabled)
+        # Rank by expected value (edge x survival), learning opportunity lifespans.
+        ops = deps.rank_by_expected_value(ops, observe_full=(kind is None and category is None))
         deps.record_flagged(ops)  # track record: flag now, reconcile at resolution
         opportunities = [
             {
@@ -248,6 +250,8 @@ def register(mcp: FastMCP) -> None:
                 "holding_days": o.holding_days,
                 "resolution_risk": o.resolution_risk,
                 "fair_value": o.fair_value,
+                "survival_probability": o.survival_probability,
+                "expected_value": o.expected_value,
                 "max_size_usd": o.max_size_usd,
                 "legs": [{"venue": l.venue.value, "market_id": l.market_id, "side": l.side.value} for l in o.legs],
             }

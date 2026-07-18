@@ -18,10 +18,12 @@ _TMP_DB = Path(tempfile.gettempdir()) / "predmarket_test_metering.db"
 _TMP_RECON = Path(tempfile.gettempdir()) / "predmarket_test_recon.db"
 _TMP_WATCH = Path(tempfile.gettempdir()) / "predmarket_test_watch.db"
 _TMP_ANCHOR = Path(tempfile.gettempdir()) / "predmarket_test_anchor.db"
+_TMP_PERSIST = Path(tempfile.gettempdir()) / "predmarket_test_persist.db"
 os.environ.setdefault("METERING_DB_URL", f"sqlite:///{_TMP_DB}")
 os.environ.setdefault("RECON_DB_URL", f"sqlite:///{_TMP_RECON}")
 os.environ.setdefault("WATCH_DB_URL", f"sqlite:///{_TMP_WATCH}")
 os.environ.setdefault("ANCHOR_DB_URL", f"sqlite:///{_TMP_ANCHOR}")
+os.environ.setdefault("PERSISTENCE_DB_URL", f"sqlite:///{_TMP_PERSIST}")
 os.environ.setdefault("PAID_ENABLED", "false")
 
 import pytest_asyncio  # noqa: E402
@@ -95,6 +97,14 @@ def clean_metering():
     # SQLite default) doesn't leak the cached store into the next test.
     from core import watches
     watches.get_watches.cache_clear()
+    # Survival/persistence store: clear rows so lifespan stats don't leak.
+    if _TMP_PERSIST.exists():
+        with sqlite3.connect(_TMP_PERSIST) as conn:
+            for table in ("sightings", "lifespans"):
+                try:
+                    conn.execute(f"DELETE FROM {table}")
+                except sqlite3.OperationalError:
+                    pass
     yield
 
 

@@ -227,8 +227,33 @@ from core.watches import (  # noqa: E402
 
 
 def _scan_all() -> list[Opportunity]:
-    """Full unfiltered scan — the firing input for watches/the alert engine."""
-    return scan_opportunities(0.0, None, None)
+    """Full unfiltered scan — the firing input for watches/the alert engine.
+    Also the survival-tracking observation point (full set is required)."""
+    opps = scan_opportunities(0.0, None, None)
+    try:
+        from core.persistence import get_persistence
+
+        get_persistence().observe(opps)  # learn opportunity lifespans over time
+    except Exception:
+        pass  # survival tracking is best-effort, never breaks a scan
+    return opps
+
+
+def rank_by_expected_value(opps: list[Opportunity], observe_full: bool) -> list[Opportunity]:
+    """Attach survival_probability + expected_value and rank by EV (F2).
+
+    When the scan was unfiltered we also feed the survival model, so lifespans
+    keep accruing even if no watches/alert engine are running.
+    """
+    from core.persistence import get_persistence
+
+    store = get_persistence()
+    if observe_full:
+        try:
+            store.observe(opps)
+        except Exception:
+            pass
+    return store.annotate(opps)
 
 
 # If ALERT_ENGINE is set, a background thread does the firing (poll becomes

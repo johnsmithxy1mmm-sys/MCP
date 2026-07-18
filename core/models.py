@@ -123,6 +123,17 @@ class Opportunity(BaseModel):
         description="Liquidity-weighted cross-venue consensus YES probability, "
         "when known — the anchor the edge is measured against.",
     )
+    survival_probability: float | None = Field(
+        default=None,
+        description="Empirical P(this opportunity is still open after the "
+        "execution window), learned from how long past opportunities of this "
+        "kind/category lasted. None until enough history exists.",
+    )
+    expected_value: float | None = Field(
+        default=None,
+        description="realizable_edge weighted by survival_probability — the "
+        "honest ranking key ('an edge you can actually reach').",
+    )
 
 
 class MatchedPair(BaseModel):
