@@ -133,7 +133,7 @@ API-key rail is wired via FastMCP helpers (`auth.py`), enabled by env.
 | `FREE_TIER_DELAY_SECONDS` | `60` | Free-tier data delay. |
 | `METERING_BACKEND` | `local` | `local` \| `stripe` \| `moesif`. |
 | `METERING_DB_URL` | `sqlite:///metering.db` | Usage/receipt store. |
-| `HISTORY_DB_URL` | `sqlite:///history.db` | Price-history store (live mode); Postgres/Timescale DSN for production. |
+| `HISTORY_DB_URL` | `sqlite:///history.db` | Price-history store. A `postgresql://` DSN engages the real asyncpg **Timescale/Postgres** path (degrades to SQLite if the driver/DB is unavailable). |
 | `MATCHER` | `lexical` | Cross-venue matcher tier: `lexical` (offline), `semantic` (embeddings), `hybrid`. |
 | `MATCH_MIN_CONFIDENCE` | `0.45` | Match threshold — tune when using `semantic`/`hybrid` (cosine is on a different scale). |
 | `EMBED_BACKEND` / `EMBED_MODEL` | `fastembed` / `BAAI/bge-small-en-v1.5` | Embedder for the semantic tier. `EMBED_BACKEND=voyage` uses a hosted embedder (no model in the image — serverless-friendly). |
@@ -171,6 +171,16 @@ API-key rail is wired via FastMCP helpers (`auth.py`), enabled by env.
 
 **Entailment & term-structure arbitrage** (C1) and **value-based pricing** for
 `get_market_history` (scales with range, capped) need no flags — always on.
+
+| **Horizontal scaling** | | *(single-instance defaults need nothing)* |
+| `REDIS_URL` | — | Shared backend for the x402 replay guard (atomic `SET NX`) and rate limiter (global fixed-window). **Required for correctness behind a load balancer** — without it each instance has its own replay set, so one signed payment could buy a call per instance. Degrades to local SQLite/memory if unset or `redis` isn't installed. |
+| `NONCE_TTL_SECONDS` | `2592000` | TTL for consumed-payment fingerprints in Redis (30d). |
+| `PG_POOL_MIN` / `PG_POOL_MAX` | `1` / `10` | asyncpg pool bounds for the Postgres history path. |
+
+Multi-instance deploy: point every instance at the same `REDIS_URL` (replay +
+rate limits) and a `postgresql://` `HISTORY_DB_URL` (shared time series). The
+async asyncpg path runs on a dedicated loop thread so the sync stores are
+unchanged. Install the extras: `--extra redis --extra postgres`.
 
 ## Deploy
 
@@ -224,7 +234,8 @@ core/
   embeddings.py Embedder backends for the semantic matcher tier (fastembed default)
   mock.py       realistic offline engine (default)
   live.py       live engine: adapters + algorithms, TTL-cached, history ingest
-  storage.py    price-history store (SQLite default, Timescale/PG via env)
+  storage.py    price-history store (SQLite default; asyncpg Timescale/PG via DSN)
+  pg.py         asyncpg loop-thread bridge for the sync stores (D2)
   reconciliation.py  flag → resolve → realized-edge / hit-rate / Brier + Merkle root
   watches.py    watch/alert store + background AlertEngine (push computed, pull drained)
   adapters/     base.py · polymarket.py · kalshi.py · manifold.py (fetch + normalize only)
