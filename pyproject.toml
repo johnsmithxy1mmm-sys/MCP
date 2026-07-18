@@ -21,6 +21,9 @@ kalshi = ["cryptography>=42"]
 # Shared state across instances (x402 replay guard + rate limiter) for horizontal
 # scaling. Without it the server runs single-instance on local SQLite/memory.
 redis = ["redis>=5.0"]
+# Real on-chain anchoring of the track-record Merkle root (EIP-1559 signing).
+# Without it, anchoring uses the deterministic MockChainAnchor.
+anchor = ["eth-account>=0.11"]
 
 [dependency-groups]
 dev = [

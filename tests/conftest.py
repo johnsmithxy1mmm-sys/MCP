@@ -91,6 +91,10 @@ def clean_metering():
                 pass
     from core import anchor
     anchor.get_anchor_store.cache_clear()
+    # Watch store singleton: reset so a test that swaps in a Redis client (or the
+    # SQLite default) doesn't leak the cached store into the next test.
+    from core import watches
+    watches.get_watches.cache_clear()
     yield
 
 

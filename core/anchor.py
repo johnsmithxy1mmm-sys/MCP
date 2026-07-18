@@ -66,19 +66,110 @@ class MockChainAnchor(ChainAnchor):
 
 
 class EvmChainAnchor(ChainAnchor):
-    """Real EVM anchor via JSON-RPC (structural; needs a funded signer).
+    """Real EVM anchor: signs an EIP-1559 tx carrying the root as calldata and
+    submits it over JSON-RPC.
 
-    Writes the root as transaction calldata to a burn/self address. Requires
-    ANCHOR_RPC_URL + a signer; any failure returns None so trust degrades to the
-    signed (but un-anchored) root rather than crashing. # TODO: real signing.
+    The root (32 bytes) rides in the ``data`` field of a 0-value self-transaction,
+    so the chain timestamps the commitment permanently. Signing uses ``eth-account``
+    (optional, lazily imported); the signer and the RPC transport are injectable so
+    the full flow is testable without the library or a live chain. Any failure —
+    missing lib, no key, RPC error — returns None, degrading to the signed-but-
+    un-anchored root rather than crashing.
+
+      ANCHOR_PRIVATE_KEY   hex private key of the (funded) anchoring account
+      ANCHOR_CHAIN_ID      optional; else fetched via eth_chainId
+      ANCHOR_GAS_LIMIT     default 30000
     """
 
-    def __init__(self, rpc_url: str, network: str):
+    def __init__(self, rpc_url: str, network: str, private_key: str | None = None,
+                 signer=None, rpc=None):
         self.rpc_url = rpc_url
         self.network = network
+        self._private_key = private_key if private_key is not None else os.getenv("ANCHOR_PRIVATE_KEY")
+        self._signer = signer          # injectable; else built lazily from eth-account
+        self._rpc = rpc                # injectable JSON-RPC callable(method, params)
 
-    def submit(self, root: str) -> dict | None:  # pragma: no cover - needs a chain
-        return None  # TODO: sign + eth_sendRawTransaction; degrade until then
+    def _get_signer(self):
+        if self._signer is not None:
+            return self._signer
+        if not self._private_key:
+            return None
+        try:
+            from eth_account import Account  # optional dependency
+        except ImportError:
+            return None
+        return _EthAccountSigner(Account.from_key(self._private_key))
+
+    def _call_rpc(self, method: str, params: list):
+        if self._rpc is not None:
+            return self._rpc(method, params)
+        import httpx
+
+        with httpx.Client(timeout=float(os.getenv("HTTP_TIMEOUT", "12"))) as client:
+            resp = client.post(self.rpc_url, json={
+                "jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+        resp.raise_for_status()
+        payload = resp.json()
+        if "error" in payload:
+            raise RuntimeError(f"rpc {method}: {payload['error']}")
+        return payload["result"]
+
+    def submit(self, root: str) -> dict | None:
+        signer = self._get_signer()
+        if signer is None:
+            return None  # no signer/key/lib -> degrade
+        try:
+            addr = signer.address
+            nonce = int(self._call_rpc("eth_getTransactionCount", [addr, "pending"]), 16)
+            chain_id = int(os.getenv("ANCHOR_CHAIN_ID") or self._call_rpc("eth_chainId", []), 16)
+            base_fee = self._base_fee()
+            tip = self._priority_fee()
+            tx = {
+                "type": 2,
+                "chainId": chain_id,
+                "nonce": nonce,
+                "to": addr,                       # self-send; the payload is the point
+                "value": 0,
+                "data": "0x" + root.removeprefix("0x"),
+                "gas": int(os.getenv("ANCHOR_GAS_LIMIT", "30000")),
+                "maxPriorityFeePerGas": tip,
+                "maxFeePerGas": base_fee * 2 + tip,
+            }
+            raw = signer.sign(tx)
+            tx_hash = self._call_rpc("eth_sendRawTransaction", [raw])
+            return {"tx_hash": tx_hash, "network": self.network, "block": None,
+                    "simulated": False}
+        except Exception:
+            import logging
+
+            logging.getLogger("predmarket.anchor").warning("on-chain anchor submit failed")
+            return None
+
+    def _base_fee(self) -> int:
+        try:
+            block = self._call_rpc("eth_getBlockByNumber", ["pending", False])
+            return int(block["baseFeePerGas"], 16)
+        except Exception:
+            return 1_000_000_000  # 1 gwei fallback
+
+    def _priority_fee(self) -> int:
+        try:
+            return int(self._call_rpc("eth_maxPriorityFeePerGas", []), 16)
+        except Exception:
+            return 1_000_000_000  # 1 gwei fallback
+
+
+class _EthAccountSigner:
+    """Adapter over an eth-account ``LocalAccount`` (the real signing path)."""
+
+    def __init__(self, account):
+        self._account = account
+        self.address = account.address
+
+    def sign(self, tx: dict) -> str:  # pragma: no cover - needs eth-account
+        signed = self._account.sign_transaction(tx)
+        raw = getattr(signed, "rawTransaction", None) or signed.raw_transaction
+        return raw.hex() if not isinstance(raw, str) else raw
 
 
 def build_anchor() -> ChainAnchor:

@@ -235,8 +235,128 @@ class WatchStore:
         ]
 
 
+class RedisWatchStore:
+    """Redis-backed watch store for multi-instance deployments.
+
+    Same surface as :class:`WatchStore`, but watches and alert queues live in
+    Redis, so a watch created on instance A and an alert fired on instance B are
+    both visible everywhere. Alert dedup uses ``SADD`` (atomic, once per
+    watch+opportunity); each client's undelivered alerts are a Redis list that
+    ``drain`` pops transactionally.
+    """
+
+    def __init__(self, redis_client):
+        self._redis = redis_client
+
+    # -- keys -------------------------------------------------------------
+    @staticmethod
+    def _wkey(watch_id): return f"w:{watch_id}"
+    @staticmethod
+    def _client_set(client_id): return f"wc:{client_id}"
+    @staticmethod
+    def _seen(watch_id): return f"aseen:{watch_id}"
+    @staticmethod
+    def _queue(client_id): return f"aq:{client_id}"
+
+    # -- watches ----------------------------------------------------------
+    def count_active(self, client_id: str) -> int:
+        return int(self._redis.scard(self._client_set(client_id)))
+
+    def create_watch(self, client_id, min_edge, category=None, kind=None, event=None) -> str:
+        if self.count_active(client_id) >= WATCH_MAX_PER_CLIENT:
+            raise WatchLimitError(
+                f"active watch limit reached ({WATCH_MAX_PER_CLIENT}); "
+                "cancel a watch before adding another")
+        watch_id = "w_" + uuid.uuid4().hex[:12]
+        self._redis.hset(self._wkey(watch_id), mapping={
+            "watch_id": watch_id, "client_id": client_id, "min_edge": str(min_edge),
+            "category": category or "", "kind": kind or "", "event": event or "",
+            "active": "1", "created_at": datetime.now(timezone.utc).isoformat()})
+        self._redis.sadd(self._client_set(client_id), watch_id)
+        self._redis.sadd("watches:active", watch_id)
+        return watch_id
+
+    def list_watches(self, client_id: str) -> list[dict]:
+        out = []
+        for wid in self._redis.smembers(self._client_set(client_id)):
+            h = self._redis.hgetall(self._wkey(wid))
+            if h:
+                out.append(self._decode(h))
+        return sorted(out, key=lambda w: w.get("created_at", ""))
+
+    def cancel_watch(self, client_id: str, watch_id: str) -> bool:
+        h = self._redis.hgetall(self._wkey(watch_id))
+        if not h or h.get("client_id") != client_id or h.get("active") != "1":
+            return False  # unknown, not yours, or already cancelled
+        self._redis.hset(self._wkey(watch_id), "active", "0")
+        self._redis.srem(self._client_set(client_id), watch_id)
+        self._redis.srem("watches:active", watch_id)
+        return True
+
+    @staticmethod
+    def _decode(h: dict) -> dict:
+        return {
+            "watch_id": h.get("watch_id"), "client_id": h.get("client_id"),
+            "min_edge": float(h.get("min_edge", 0) or 0),
+            "category": h.get("category") or None, "kind": h.get("kind") or None,
+            "event": h.get("event") or None,
+            "active": int(h.get("active", 0) or 0), "created_at": h.get("created_at"),
+        }
+
+    # -- fire + drain -----------------------------------------------------
+    def fire(self, opps: list[Opportunity]) -> int:
+        fired = 0
+        new_alerts: list[dict] = []
+        for wid in list(self._redis.smembers("watches:active")):
+            h = self._redis.hgetall(self._wkey(wid))
+            if not h or h.get("active") != "1":
+                continue
+            w = self._decode(h)
+            for opp in opps:
+                if opp.realizable_edge < w["min_edge"]:
+                    continue
+                if w["category"] and (opp.category or "") != w["category"]:
+                    continue
+                if w["kind"] and opp.kind.value != w["kind"]:
+                    continue
+                if w["event"] and w["event"].lower() not in opp.title.lower():
+                    continue
+                if not self._redis.sadd(self._seen(wid), _opp_sig(opp)):
+                    continue  # already alerted for this watch+opportunity
+                ts = datetime.now(timezone.utc).isoformat()
+                payload = _opp_payload(opp)
+                item = {"watch_id": wid, "ts": ts, "opportunity": payload}
+                self._redis.rpush(self._queue(w["client_id"]), json.dumps(item))
+                fired += 1
+                new_alerts.append({**item, "client_id": w["client_id"]})
+        if new_alerts:
+            WatchStore._push(new_alerts)
+        return fired
+
+    def peek(self, client_id: str) -> list[dict]:
+        items = self._redis.lrange(self._queue(client_id), 0, -1)
+        return [json.loads(i) for i in items]
+
+    def drain(self, client_id: str) -> list[dict]:
+        key = self._queue(client_id)
+        pipe = self._redis.pipeline()
+        pipe.lrange(key, 0, -1)
+        pipe.delete(key)
+        items = pipe.execute()[0]
+        return [json.loads(i) for i in items]
+
+
 @lru_cache(maxsize=1)
-def get_watches() -> WatchStore:
+def get_watches():
+    """Redis-backed store when REDIS_URL is set (multi-instance), else SQLite."""
+    try:
+        from predmarket_mcp.kv import get_redis
+
+        client = get_redis()
+        if client is not None:
+            return RedisWatchStore(client)
+    except Exception:
+        pass
     return WatchStore()
 
 
