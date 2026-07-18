@@ -125,6 +125,24 @@ class KalshiAdapter(VenueAdapter):
             volume_usd=volume_usd,
         )
 
+    def fetch_resolution(self, market_id: str) -> int | None:
+        """Settled outcome from Kalshi: status settled/finalized + result yes/no."""
+        try:
+            data = fetch_json(KALSHI_URL, f"/markets/{market_id}",
+                              headers=_auth_headers("GET", f"/markets/{market_id}"),
+                              venue="Kalshi")
+        except Exception:
+            return None
+        row = (data or {}).get("market") or data or {}
+        if str(row.get("status", "")).lower() not in ("settled", "finalized", "closed"):
+            return None
+        result = str(row.get("result", "")).lower()
+        if result == "yes":
+            return 1
+        if result == "no":
+            return 0
+        return None
+
     def fetch_orderbook(self, market_id: str) -> OrderbookSnapshot | None:
         path = f"/markets/{market_id}/orderbook"
         data = fetch_json(

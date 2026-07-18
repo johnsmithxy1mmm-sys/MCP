@@ -80,6 +80,21 @@ class ManifoldAdapter(VenueAdapter):
             close_time=close_time,
         )
 
+    def fetch_resolution(self, market_id: str) -> int | None:
+        """Settled outcome from Manifold: isResolved + resolution YES/NO."""
+        try:
+            row = fetch_json(self.base_url, f"/v0/market/{market_id}", venue="Manifold")
+        except Exception:
+            return None
+        if not isinstance(row, dict) or not row.get("isResolved"):
+            return None
+        res = str(row.get("resolution", "")).upper()
+        if res == "YES":
+            return 1
+        if res == "NO":
+            return 0
+        return None
+
     # -- orderbook (synthesized from CPMM state) --------------------------
     def fetch_orderbook(self, market_id: str) -> OrderbookSnapshot | None:
         row = fetch_json(self.base_url, f"/v0/market/{market_id}", venue="Manifold")

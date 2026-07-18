@@ -164,6 +164,7 @@ API-key rail is wired via FastMCP helpers (`auth.py`), enabled by env.
 | **v3 — Provable Alpha (the moat)** | | *(intelligence built on our own history/logic)* |
 | `CALIBRATION_MIN_SAMPLES` / `CALIBRATION_BINS` | `30` / `10` | Online probability calibration from resolution history (identity until enough outcomes). |
 | `ANALYST_ENABLED` / `ANTHROPIC_API_KEY` | `off` / — | Also powers the resolution-**basis** LLM diff (settlement-rule comparison); heuristic otherwise. |
+| `RESOLUTION_ENGINE` / `RESOLUTION_INTERVAL` | `off` / `3600` | Autonomous resolver: settles pending flagged opportunities against venue resolution APIs so the track record / calibration / Merkle anchor grow with no operator (needs `CORE_ENGINE=live`). |
 | `OPTIONS_ENABLED` / `DERIBIT_API_URL` | `off` / deribit.com | Options-implied probability cross-check (Breeden–Litzenberger) in `evaluate_market`. |
 | `MICROSTRUCTURE_WINDOW` | `20` | Lookback for the informed-flow / momentum read. |
 | `ANCHOR_ENABLED` / `ANCHOR_RPC_URL` / `ANCHOR_NETWORK` / `ANCHOR_MIN_INTERVAL` | `off` / — / `base-sepolia` / `3600` | On-chain anchoring of the track-record Merkle root (mock chain until an RPC is set). |

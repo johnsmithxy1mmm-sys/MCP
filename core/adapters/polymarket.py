@@ -121,6 +121,30 @@ class PolymarketAdapter(VenueAdapter):
             self._normalize_market(row)  # populates self._token_by_market
         return self._token_by_market.get(market_id)
 
+    def fetch_resolution(self, market_id: str) -> int | None:
+        """Settled outcome from Gamma: a closed market whose YES price has snapped
+        to ~1 (YES) or ~0 (NO). None while still trading."""
+        try:
+            rows = fetch_json(GAMMA_URL, "/markets",
+                              params={"condition_ids": market_id, "limit": 1},
+                              venue="Polymarket")
+        except Exception:
+            return None
+        for row in rows if isinstance(rows, list) else []:
+            if not (row.get("closed") or row.get("umaResolutionStatus") == "resolved"):
+                return None
+            prices = _as_list(row.get("outcomePrices"))
+            outcomes = _as_list(row.get("outcomes"))
+            yes_idx = next((i for i, o in enumerate(outcomes)
+                            if str(o).strip().lower() == "yes"), 0)
+            if yes_idx < len(prices):
+                yp = _f(prices[yes_idx])
+                if yp >= 0.99:
+                    return 1
+                if yp <= 0.01:
+                    return 0
+        return None
+
     # -- orderbook --------------------------------------------------------
     def fetch_orderbook(self, market_id: str) -> OrderbookSnapshot | None:
         token_id = self._resolve_token(market_id)

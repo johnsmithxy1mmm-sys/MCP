@@ -79,7 +79,9 @@ class ReconciliationStore:
             yp = prices.get(leg.market_id, 0.5)
             yes_prices.append(yp)
             entry = round(yp if leg.side == Side.YES else 1.0 - yp, 4)
-            legs.append({"market_id": leg.market_id, "side": leg.side.value, "entry_price": entry})
+            # Store venue too, so an autonomous resolver knows which API to ask.
+            legs.append({"venue": leg.venue.value, "market_id": leg.market_id,
+                         "side": leg.side.value, "entry_price": entry})
         implied = round(sum(yes_prices) / len(yes_prices), 4) if yes_prices else None
         opp_id = _opp_id(opp, legs)
         with self._lock, self._connect() as conn:
@@ -153,6 +155,19 @@ class ReconciliationStore:
     def count(self) -> int:
         with self._lock, self._connect() as conn:
             return conn.execute("SELECT COUNT(*) FROM flagged").fetchone()[0]
+
+    def pending_legs(self) -> list[tuple[str, str]]:
+        """Distinct (venue, market_id) across all UNRESOLVED flags — the set an
+        autonomous resolver must check for settlement."""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute("SELECT legs FROM flagged WHERE resolved = 0").fetchall()
+        seen: set[tuple[str, str]] = set()
+        for row in rows:
+            for leg in json.loads(row["legs"]):
+                venue = leg.get("venue")
+                if venue:
+                    seen.add((venue, leg["market_id"]))
+        return sorted(seen)
 
     # -- Merkle commitment (Trust v2) -------------------------------------
     def resolved_records(self) -> list[dict]:

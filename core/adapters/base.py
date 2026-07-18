@@ -129,3 +129,9 @@ class VenueAdapter(ABC):
     @abstractmethod
     def fetch_orderbook(self, market_id: str) -> OrderbookSnapshot | None:
         """Return a normalized top-of-book snapshot for one market."""
+
+    def fetch_resolution(self, market_id: str) -> int | None:
+        """Return 1/0 if the market has SETTLED yes/no, else None (unresolved or
+        unknown). Used by the autonomous resolver to close the track record.
+        Default: unknown — adapters that can determine settlement override it."""
+        return None

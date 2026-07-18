@@ -236,6 +236,13 @@ def _scan_all() -> list[Opportunity]:
 # so offline tests and serverless deploys stay fully synchronous.
 start_alert_engine(_scan_all)
 
+# If RESOLUTION_ENGINE is set, a background thread settles pending flagged
+# opportunities against venue resolution APIs — so the track record, calibration
+# and Merkle anchor grow autonomously. Off by default (needs live venues).
+from core.resolution import start_resolution_engine  # noqa: E402
+
+start_resolution_engine()
+
 
 def create_watch(client_id, min_edge, category=None, kind=None, event=None) -> dict:
     """Register a watch, run an immediate scan, return id + any instant matches."""
