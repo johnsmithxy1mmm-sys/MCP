@@ -94,6 +94,33 @@ def backtest_strategy(
     return simulate(points, params)
 
 
+_CRYPTO_CCY = {"bitcoin": "BTC", "btc": "BTC", "ethereum": "ETH", "eth": "ETH"}
+
+
+def options_divergence(market: Market) -> dict | None:
+    """Options-implied vs market probability for a crypto strike market (C7).
+
+    None unless OPTIONS_ENABLED and the title parses to a supported crypto strike.
+    """
+    from core.entailment import parse_claim
+    from core.options import divergence, get_provider
+
+    provider = get_provider()
+    if provider is None:
+        return None
+    claim = parse_claim(market)
+    if claim is None or claim.direction != "above":
+        return None
+    currency = next((c for tok, c in _CRYPTO_CCY.items() if tok in claim.entity), None)
+    if currency is None:
+        return None
+    implied = provider.implied_probability(currency, claim.threshold)
+    if implied is None:
+        return None
+    return {**divergence(market.yes_price, implied), "currency": currency,
+            "strike": claim.threshold}
+
+
 def scan_opportunities(
     min_edge: float, kind: str | None, category: str | None
 ) -> list[Opportunity]:

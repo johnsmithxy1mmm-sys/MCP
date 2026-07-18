@@ -166,6 +166,8 @@ def register(mcp: FastMCP) -> None:
             return {"error": "market_not_found", "venue": venue, "market_id": market_id}
         now = deps.now()
         delay = settings.free_tier_delay_seconds
+        # Real-money cross-check vs the options market (opt-in; None when off).
+        options = deps.options_divergence(market)
         # Honest delay: serve a real historical point at least `delay` seconds
         # old, with its true timestamp — never backdate live data.
         points = deps.get_history(
@@ -186,6 +188,7 @@ def register(mcp: FastMCP) -> None:
                 },
                 # History-calibrated probability (identity until enough outcomes resolve).
                 "calibration": deps.calibrate_probability(yes, market.category),
+                **({"options": options} if options else {}),
                 "delayed": True,
                 "realtime": False,
                 "note": f"Free tier: price ~{delay}s delayed from the history store; "
@@ -197,6 +200,7 @@ def register(mcp: FastMCP) -> None:
         return {
             "market": _market_dict(market),
             "calibration": deps.calibrate_probability(market.yes_price, market.category),
+            **({"options": options} if options else {}),
             "delayed": False,
             "realtime": False,
             "note": "No delayed snapshot available yet; showing the latest with an "
