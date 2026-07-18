@@ -21,7 +21,7 @@ trades or holds funds.
 > The shared intelligence (matcher, signals, realizable-edge) lives in
 > `core/algorithms.py` and is used by **both** engines — not duplicated.
 
-## Tool catalog (11 tools, 2 resources, 1 prompt)
+## Tool catalog (12 tools, 4 resources, 1 prompt)
 
 Descriptions are the agent's only documentation, so they're written as copy.
 Every response carries freshness (`as_of` / `data_age_seconds`) and cost
@@ -185,6 +185,15 @@ entailment violations, term structures); paid `assess_portfolio` tool (net
 exposure, correlation, portfolio Kelly, hedges); `simulate_strategy` now includes
 an out-of-sample walk-forward check.
 
+**Native multi-outcome markets** (G): free `outcomes://{event}` resource
+reconstructs an N-outcome event (election, bracketed number) from its binary
+markets — **de-vigged** fair probabilities (margin removed so they sum to 1), the
+overround, the favorite, and a **completeness-aware** full dutch book (an
+over-round set is always arbitrage; an under-round is only free money if the
+outcome set is complete — flagging otherwise is a false arb the naive path emits).
+Adapters populate `event_group` from venue grouping (Polymarket negRisk, Kalshi
+event ticker).
+
 | **Horizontal scaling** | | *(single-instance defaults need nothing)* |
 | `REDIS_URL` | — | Shared backend for the x402 replay guard (atomic `SET NX`) and rate limiter (global fixed-window). **Required for correctness behind a load balancer** — without it each instance has its own replay set, so one signed payment could buy a call per instance. Degrades to local SQLite/memory if unset or `redis` isn't installed. |
 | `NONCE_TTL_SECONDS` | `2592000` | TTL for consumed-payment fingerprints in Redis (30d). |
@@ -220,7 +229,8 @@ semantic matcher runs with no Hugging Face egress at runtime.
 src/predmarket_mcp/
   server.py     FastMCP app; /health, /metrics, /pubkey, /track-record; HTTP app + middleware
   tools.py      the 11 tools (call core/, format for agents — no logic here)
-  resources.py  market:// + alerts:// resources
+  resources.py  market:// · alerts:// · event:// · outcomes:// resources
+  multioutcome.py native N-outcome markets: de-vig + complete-set dutch book (G)
   prompts.py    arbitrage_scan_workflow
   config.py     env-driven settings (PAID_ENABLED flag)
   deps.py       the ONLY seam into core/

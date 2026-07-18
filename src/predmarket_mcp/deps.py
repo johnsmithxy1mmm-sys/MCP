@@ -53,6 +53,22 @@ def event_view(entity: str) -> dict:
     return _view(entity, markets)
 
 
+def outcome_view(event: str) -> dict:
+    """Native multi-outcome view for an event group: de-vigged probabilities,
+    overround, favorite, and a completeness-aware full dutch book (G)."""
+    from core.multioutcome import build_from_markets, view as _mom_view
+
+    markets = repo.search_markets(event, category=None, venue=None)
+    moms = build_from_markets(markets)
+    q = event.strip().lower()
+    matched = [m for m in moms if q in m.event.lower() or
+               any(q in (o.name or "").lower() for o in m.outcomes)] or moms
+    if not matched:
+        return {"event": event, "found": False, "multi_outcome_markets": []}
+    return {"event": event, "found": True,
+            "multi_outcome_markets": [_mom_view(m) for m in matched]}
+
+
 def get_market(venue: str, market_id: str) -> Market | None:
     return repo.get_market(venue, market_id)
 

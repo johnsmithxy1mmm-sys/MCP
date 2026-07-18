@@ -56,6 +56,19 @@ def register(mcp: FastMCP) -> None:
         return {**deps.event_view(entity), **deps.staleness(deps.now())}
 
     @mcp.resource(
+        "outcomes://{event}",
+        description=(
+            "Native multi-outcome view of an event with N mutually-exclusive "
+            "outcomes (election, bracketed number): DE-VIGGED fair probabilities "
+            "(margin removed so they sum to 1), the overround, the favorite, and a "
+            "completeness-aware full dutch book (an under-round is only arbitrage if "
+            "the outcome set is complete). Free. e.g. outcomes://2028-president"
+        ),
+    )
+    def outcomes_resource(event: str) -> dict:
+        return {**deps.outcome_view(event), **deps.staleness(deps.now())}
+
+    @mcp.resource(
         "market://{venue}/{market_id}",
         description=(
             "Snapshot of one prediction market (normalized YES/NO prices, implied "

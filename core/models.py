@@ -136,6 +136,59 @@ class Opportunity(BaseModel):
     )
 
 
+class Outcome(BaseModel):
+    """One mutually-exclusive outcome of a multi-outcome event (a candidate,
+    a bracket, …), backed by a single binary market."""
+
+    name: str
+    venue: Venue
+    market_id: str
+    yes_price: float = Field(description="Market's YES probability for this outcome.")
+    volume_usd: float | None = None
+
+
+class MultiOutcomeMarket(BaseModel):
+    """A set of mutually-exclusive outcomes for one event (election with N
+    candidates, a numeric range split into brackets, …).
+
+    Binary markets stay the primitive; this is the aggregate view over a group of
+    them that share an ``event_group``. Its probabilities should sum to ~1 — the
+    excess is the venue's margin (overround / vig), which de-vigging removes.
+    """
+
+    event: str
+    outcomes: list[Outcome]
+    category: str | None = None
+    close_time: datetime | None = None
+    # Whether the listed outcomes cover EVERY possibility. Matters for arbitrage:
+    # an under-round (sum < 1) is only free money if the set is complete.
+    complete: bool = False
+
+    @property
+    def total_probability(self) -> float:
+        return round(sum(o.yes_price for o in self.outcomes), 4)
+
+    @property
+    def overround(self) -> float:
+        """Sum of outcome probabilities minus 1 — the bookmaker's margin (+) or a
+        gap (–, often just an incomplete set)."""
+        return round(self.total_probability - 1.0, 4)
+
+    @property
+    def normalized(self) -> list[dict]:
+        """De-vigged probabilities: each outcome's share of the total, so they sum
+        to exactly 1 — the market's 'true' probabilities with the margin removed."""
+        t = self.total_probability
+        return [{"name": o.name, "market_id": o.market_id,
+                 "raw_probability": o.yes_price,
+                 "fair_probability": round(o.yes_price / t, 4) if t else 0.0}
+                for o in self.outcomes]
+
+    @property
+    def favorite(self) -> str | None:
+        return max(self.outcomes, key=lambda o: o.yes_price).name if self.outcomes else None
+
+
 class MatchedPair(BaseModel):
     """Two markets on different venues judged to be the same real-world event."""
 

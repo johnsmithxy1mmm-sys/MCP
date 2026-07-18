@@ -115,6 +115,9 @@ class KalshiAdapter(VenueAdapter):
         # at $1, so USD notional traded ~= contracts * price (a contract's cost).
         contracts = float(row.get("volume") or 0)
         volume_usd = round(contracts * yes, 2) if contracts and yes else None
+        # Kalshi groups related markets under an event ticker (often the mutually-
+        # exclusive brackets of one event).
+        event_group = str(row.get("event_ticker") or "").strip() or None
         return Market(
             venue=Venue.KALSHI,
             market_id=ticker,
@@ -123,6 +126,7 @@ class KalshiAdapter(VenueAdapter):
             yes_price=yes,
             no_price=round(1.0 - yes, 4),
             volume_usd=volume_usd,
+            event_group=event_group,
         )
 
     def fetch_resolution(self, market_id: str) -> int | None:

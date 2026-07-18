@@ -88,6 +88,9 @@ class PolymarketAdapter(VenueAdapter):
                 close_time = datetime.fromisoformat(str(row["endDate"]).replace("Z", "+00:00"))
             except ValueError:
                 close_time = None
+        # negRisk markets are one mutually-exclusive event split into outcomes;
+        # the shared id groups them into a multi-outcome market.
+        event_group = str(row.get("negRiskMarketID") or "").strip() or None
         return Market(
             venue=Venue.POLYMARKET,
             market_id=market_id,
@@ -97,6 +100,7 @@ class PolymarketAdapter(VenueAdapter):
             no_price=round(_f(prices[no_idx]), 4),
             volume_usd=_f(row.get("volume") or row.get("volumeNum")),
             close_time=close_time,
+            event_group=event_group,
         )
 
     def _resolve_token(self, market_id: str) -> str | None:
