@@ -47,3 +47,6 @@ tools:
   poll_alerts:
     tier: paid
     price_usd: 0.005
+  simulate_strategy:
+    tier: paid
+    price_usd: 0.02

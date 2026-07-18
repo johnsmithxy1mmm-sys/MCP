@@ -20,6 +20,7 @@ async def test_catalog_size(client):
         "list_venues",
         "poll_alerts",
         "search_markets",
+        "simulate_strategy",
         "track_record",
         "watch",
     ]

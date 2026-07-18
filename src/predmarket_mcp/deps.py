@@ -84,6 +84,16 @@ def calibrate_probability(p: float, category: str | None = None) -> dict:
     return _cal(p, category)
 
 
+def backtest_strategy(
+    venue: str, market_id: str, frm: datetime, to: datetime, params
+) -> dict:
+    """Replay a mean-reversion rule over recorded history with honest costs (C4)."""
+    from core.backtest import simulate
+
+    points = get_history(venue, market_id, frm, to)
+    return simulate(points, params)
+
+
 def scan_opportunities(
     min_edge: float, kind: str | None, category: str | None
 ) -> list[Opportunity]:

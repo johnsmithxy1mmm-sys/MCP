@@ -379,6 +379,53 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.tool(
         tags={"paid"},
+        meta=_paid_meta("simulate_strategy"),
+        description=(
+            "Backtest a mean-reversion rule over this market's RECORDED price history "
+            "with honest costs (venue fees + slippage). Go long YES when price dips "
+            "`entry_edge` below its trailing mean, exit when it recovers to within "
+            "`exit_edge`. Returns trades, hit_rate, total_return, sharpe_per_trade and "
+            "max_drawdown. Validate a rule on real history before paying for live scans. "
+            f"Costs {price_str('simulate_strategy')} per call."
+        ),
+    )
+    def simulate_strategy(
+        venue: Annotated[str, Field(description="polymarket or kalshi.")],
+        market_id: Annotated[str, Field(description="Market id from search_markets.")],
+        from_ts: Annotated[str, Field(description="Backtest start, ISO-8601.")],
+        to_ts: Annotated[str, Field(description="Backtest end, ISO-8601.")],
+        entry_edge: Annotated[float, Field(ge=0, le=1, description="Enter when price is this far below the trailing mean, e.g. 0.05.")] = 0.05,
+        exit_edge: Annotated[float, Field(ge=0, le=1, description="Exit when price recovers to within this of the mean, e.g. 0.01.")] = 0.01,
+        window: Annotated[int, Field(ge=2, le=500, description="Trailing-mean lookback in points.")] = 10,
+        size_usd: Annotated[float, Field(gt=0, description="Position size per trade.")] = 1000.0,
+    ) -> dict:
+        from core.backtest import BacktestParams
+        from core.models import Venue
+
+        try:
+            frm = _parse_iso(from_ts)
+            to = _parse_iso(to_ts)
+        except ValueError:
+            return {"error": "bad_timestamp", "hint": "Use ISO-8601, e.g. 2026-06-01T00:00:00Z."}
+        venue_enum = Venue.POLYMARKET if venue == "polymarket" else (
+            Venue.KALSHI if venue == "kalshi" else Venue.MANIFOLD)
+        params = BacktestParams(
+            entry_edge=entry_edge, exit_edge=exit_edge, window=window,
+            size_usd=size_usd, venue=venue_enum,
+        )
+        result = deps.backtest_strategy(venue, market_id, frm, to, params)
+        return {
+            "venue": venue, "market_id": market_id,
+            "params": {"entry_edge": entry_edge, "exit_edge": exit_edge,
+                       "window": window, "size_usd": size_usd},
+            "result": result,
+            "realtime": False,
+            **deps.staleness(deps.now()),
+            **_cost_note("simulate_strategy"),
+        }
+
+    @mcp.tool(
+        tags={"paid"},
         meta=_paid_meta("poll_alerts"),
         description=(
             "Retrieve opportunities that fired against your watches since you last "
