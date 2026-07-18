@@ -85,7 +85,7 @@ class RateLimiter:
     # request just starts a fresh full bucket — safe for a limiter).
     MAX_BUCKETS = int(os.getenv("RATE_LIMIT_MAX_CLIENTS", "10000"))
 
-    def __init__(self, rpm: int, burst: int | None = None):
+    def __init__(self, rpm: int, burst: int | None = None, redis_client=None):
         from collections import OrderedDict
 
         self.rpm = rpm
@@ -93,6 +93,16 @@ class RateLimiter:
         self.capacity = float(burst if burst is not None else rpm)
         self._buckets: "OrderedDict[str, TokenBucket]" = OrderedDict()
         self._lock = threading.Lock()
+        # Shared limiter across instances when Redis is configured (a per-process
+        # bucket would let a caller do rpm x instances). Fixed-window counter.
+        if redis_client is not None:
+            self._redis = redis_client
+        else:
+            try:
+                from .kv import get_redis
+                self._redis = get_redis()
+            except Exception:
+                self._redis = None
 
     @property
     def enabled(self) -> bool:
@@ -101,6 +111,25 @@ class RateLimiter:
     def allow(self, client_id: str) -> bool:
         if not self.enabled:
             return True
+        if self._redis is not None:
+            return self._allow_redis(client_id)
+        return self._allow_local(client_id)
+
+    def _allow_redis(self, client_id: str) -> bool:
+        """Global fixed-window counter: rpm requests per 60s across all instances."""
+        import time as _t
+
+        window = int(_t.time() // 60)
+        key = f"rl:{client_id}:{window}"
+        try:
+            count = self._redis.incr(key)
+            if count == 1:
+                self._redis.expire(key, 60)
+            return count <= self.rpm
+        except Exception:
+            return self._allow_local(client_id)  # Redis hiccup -> degrade, don't block
+
+    def _allow_local(self, client_id: str) -> bool:
         with self._lock:
             bucket = self._buckets.get(client_id)
             if bucket is None:

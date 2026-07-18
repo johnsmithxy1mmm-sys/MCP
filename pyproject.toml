@@ -18,6 +18,9 @@ postgres = ["asyncpg>=0.29"]
 semantic = ["fastembed>=0.4"]
 # Live Kalshi private endpoints (orderbook) need RSA-PSS request signing.
 kalshi = ["cryptography>=42"]
+# Shared state across instances (x402 replay guard + rate limiter) for horizontal
+# scaling. Without it the server runs single-instance on local SQLite/memory.
+redis = ["redis>=5.0"]
 
 [dependency-groups]
 dev = [

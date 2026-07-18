@@ -18,6 +18,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import sqlite3
 import threading
 import uuid
@@ -335,14 +336,31 @@ class ReceiptStore:
 
 
 # --- replay protection ------------------------------------------------------
+_NONCE_PREFIX = "x402:nonce:"
+
+
 class NonceStore:
     """Records accepted payment fingerprints so a signed X-PAYMENT can't be
-    replayed. Without this, one signed header buys unlimited paid calls."""
+    replayed. Without this, one signed header buys unlimited paid calls.
 
-    def __init__(self, db_url: str):
+    Uses Redis when available (atomic ``SET NX`` — correct across instances, the
+    only safe option behind a load balancer); otherwise a local SQLite table.
+    """
+
+    def __init__(self, db_url: str, redis_client=None):
         self._lock = threading.Lock()
         self._path = _sqlite_path_of(db_url)
-        self._init_db()
+        self._ttl = int(os.getenv("NONCE_TTL_SECONDS", str(30 * 24 * 3600)))
+        if redis_client is not None:
+            self._redis = redis_client
+        else:
+            try:
+                from ..kv import get_redis
+                self._redis = get_redis()
+            except Exception:
+                self._redis = None
+        if self._redis is None:
+            self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._path)
@@ -357,6 +375,8 @@ class NonceStore:
             )
 
     def is_used(self, fingerprint: str) -> bool:
+        if self._redis is not None:
+            return bool(self._redis.exists(_NONCE_PREFIX + fingerprint))
         with self._lock, self._connect() as conn:
             row = conn.execute(
                 "SELECT 1 FROM used_payments WHERE fingerprint = ?", (fingerprint,)
@@ -364,7 +384,13 @@ class NonceStore:
             return row is not None
 
     def mark_used(self, fingerprint: str) -> bool:
-        """Return True if newly recorded (accept), False if already seen (replay)."""
+        """Return True if newly recorded (accept), False if already seen (replay).
+
+        Redis ``SET NX`` is atomic, so two instances racing the same replayed
+        payment can never both accept it.
+        """
+        if self._redis is not None:
+            return bool(self._redis.set(_NONCE_PREFIX + fingerprint, "1", nx=True, ex=self._ttl))
         with self._lock, self._connect() as conn:
             cur = conn.execute(
                 "INSERT OR IGNORE INTO used_payments (fingerprint, ts) VALUES (?, ?)",
@@ -373,5 +399,7 @@ class NonceStore:
             return cur.rowcount > 0
 
     def count(self) -> int:
+        if self._redis is not None:
+            return sum(1 for _ in self._redis.scan_iter(match=_NONCE_PREFIX + "*"))
         with self._lock, self._connect() as conn:
             return conn.execute("SELECT COUNT(*) FROM used_payments").fetchone()[0]
