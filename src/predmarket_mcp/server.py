@@ -86,10 +86,12 @@ async def public_track_record(_request: Request) -> JSONResponse:
     # SQLite reads off the event loop (consistent with the async-IO discipline).
     metrics = await anyio.to_thread.run_sync(deps.track_record_metrics)
     commitment = await anyio.to_thread.run_sync(deps.track_record_commitment)
+    anchor = await anyio.to_thread.run_sync(deps.anchor_track_record)  # None unless enabled
     signed = {**metrics, "commitment": commitment}
-    return JSONResponse(
-        {"track_record": metrics, "commitment": commitment, "provenance": _prov(signed)}
-    )
+    body = {"track_record": metrics, "commitment": commitment, "provenance": _prov(signed)}
+    if anchor:
+        body["onchain_anchor"] = anchor  # public-chain timestamp of the root
+    return JSONResponse(body)
 
 
 # --- Registration -------------------------------------------------------------

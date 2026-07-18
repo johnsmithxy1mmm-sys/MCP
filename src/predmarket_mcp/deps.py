@@ -194,6 +194,14 @@ def track_record_commitment() -> dict:
     return get_reconciliation().merkle_commitment()
 
 
+def anchor_track_record() -> dict | None:
+    """Anchor the current Merkle root on-chain if enabled + due (C6). Returns the
+    latest anchor, or None when ANCHOR_ENABLED is unset."""
+    from core.anchor import anchor_track_record as _anchor
+
+    return _anchor()
+
+
 def resolve_outcomes(outcomes: dict[str, int]) -> int:
     return get_reconciliation().resolve(outcomes)
 

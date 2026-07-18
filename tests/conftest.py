@@ -17,9 +17,11 @@ import pytest
 _TMP_DB = Path(tempfile.gettempdir()) / "predmarket_test_metering.db"
 _TMP_RECON = Path(tempfile.gettempdir()) / "predmarket_test_recon.db"
 _TMP_WATCH = Path(tempfile.gettempdir()) / "predmarket_test_watch.db"
+_TMP_ANCHOR = Path(tempfile.gettempdir()) / "predmarket_test_anchor.db"
 os.environ.setdefault("METERING_DB_URL", f"sqlite:///{_TMP_DB}")
 os.environ.setdefault("RECON_DB_URL", f"sqlite:///{_TMP_RECON}")
 os.environ.setdefault("WATCH_DB_URL", f"sqlite:///{_TMP_WATCH}")
+os.environ.setdefault("ANCHOR_DB_URL", f"sqlite:///{_TMP_ANCHOR}")
 os.environ.setdefault("PAID_ENABLED", "false")
 
 import pytest_asyncio  # noqa: E402
@@ -80,6 +82,15 @@ def clean_metering():
     # the reconciliation store trains a fresh calibrator.
     from core import calibration
     calibration.clear_cache()
+    # On-chain anchor store: clear rows + the singleton so anchor tests isolate.
+    if _TMP_ANCHOR.exists():
+        with sqlite3.connect(_TMP_ANCHOR) as conn:
+            try:
+                conn.execute("DELETE FROM anchors")
+            except sqlite3.OperationalError:
+                pass
+    from core import anchor
+    anchor.get_anchor_store.cache_clear()
     yield
 
 
