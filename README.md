@@ -127,7 +127,7 @@ API-key rail is wired via FastMCP helpers (`auth.py`), enabled by env.
 ### Configuration (all via env — no secrets in code)
 | Var | Default | Purpose |
 |---|---|---|
-| `CORE_ENGINE` | `mock` | `mock` (offline stubs) or `live` (Polymarket/Kalshi adapters). |
+| `CORE_ENGINE` | `mock` | `mock` (offline stubs) or `live` (Polymarket/Kalshi adapters). Live mode needs outbound egress to the venue hosts (`gamma-api.polymarket.com`, `clob.polymarket.com`, `api.elections.kalshi.com`); if the network policy blocks them the live engine degrades gracefully to empty results and the per-venue circuit breaker opens (verified). |
 | `PAID_ENABLED` | `false` | Master gate switch. |
 | `PAYMENT_RAIL` | `x402` | `x402` or `apikey`. |
 | `FREE_TIER_DELAY_SECONDS` | `60` | Free-tier data delay. |
