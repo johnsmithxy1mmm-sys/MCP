@@ -1,0 +1,68 @@
+# predmarket-mcp — turnkey autonomous stack: server + Redis + Postgres/Timescale.
+#
+#   cd deploy && cp .env.example .env && $EDITOR .env
+#   docker compose up -d --build
+#   curl localhost:8000/health
+#
+# `restart: unless-stopped` keeps everything running across reboots. The server
+# starts its own background alert-engine + WSS ingestor from the env flags, so
+# once this is up it runs autonomously.
+
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: predmarket
+      POSTGRES_DB: predmarket
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U predmarket -d predmarket"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  server:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        # Bake in the production extras. Add `--extra semantic` + WITH_SEMANTIC=true
+        # if you want the embedding matcher (larger image, weights pre-downloaded).
+        EXTRAS: "--extra postgres --extra redis --extra kalshi --extra anchor"
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - appdata:/data          # SQLite stores (metering/receipts, reconciliation)
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health').status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  pgdata:
+  redisdata:
+  appdata:
