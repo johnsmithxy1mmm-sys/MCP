@@ -103,6 +103,13 @@ def backtest_strategy(
     return simulate(points, params)
 
 
+def quote_quality(yes_price, volume_usd, data_age_seconds=None) -> dict:
+    """Reliability score + flags for a quote (F7)."""
+    from core.quality import quote_quality as _q
+
+    return _q(yes_price, volume_usd, data_age_seconds)
+
+
 def microstructure(venue: str, market_id: str) -> dict | None:
     """Informed-flow microstructure read from recent price history (C8)."""
     from datetime import timedelta

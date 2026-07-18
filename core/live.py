@@ -184,7 +184,11 @@ def match_event(event: str) -> MatchedPair | None:
 def scan_opportunities(
     min_edge: float, kind: str | None = None, category: str | None = None
 ) -> list[Opportunity]:
+    from .quality import is_usable
+
     markets = repo._all_markets()
+    # Quality gate (off by default): don't scan opportunities on unreliable quotes.
+    markets = [m for m in markets if is_usable(m)]
     out: list[Opportunity] = []
     if kind in (None, "cross_venue"):
         out += algorithms.scan_cross_venue(

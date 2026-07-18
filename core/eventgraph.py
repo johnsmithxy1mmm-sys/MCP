@@ -140,6 +140,33 @@ def transitive_entailment_violations(
     return out
 
 
+def term_structures(markets: list[Market]) -> list[dict]:
+    """Probability term structure per (entity, threshold): P(reach X by t) across
+    deadlines — the implied path of an event, sellable on its own (F8).
+
+    A monotone-increasing curve is well-formed (once reached, stays reached);
+    a dip flags a term-structure mispricing.
+    """
+    claims = [c for c in (parse_claim(m) for m in markets) if c is not None]
+    groups: dict[tuple, list] = {}
+    for c in claims:
+        if c.direction == "above" and c.cumulative and c.year is not None:
+            groups.setdefault((c.entity, c.threshold), []).append(c)
+    out: list[dict] = []
+    for (entity, threshold), group in groups.items():
+        if len(group) < 2:
+            continue
+        group = sorted(group, key=lambda c: (c.year, c.month or "00"))
+        curve = [{"deadline": list(c.deadline_key), "probability": c.market.yes_price,
+                  "market_id": c.market.market_id} for c in group]
+        probs = [pt["probability"] for pt in curve]
+        out.append({
+            "entity": entity, "threshold": threshold, "curve": curve,
+            "monotone": all(probs[i] <= probs[i + 1] + 1e-9 for i in range(len(probs) - 1)),
+        })
+    return out
+
+
 def event_view(entity_query: str, markets: list[Market]) -> dict:
     """The ``event://{entity}`` payload: matching clusters + their relations."""
     q = entity_query.strip().lower()
@@ -161,4 +188,5 @@ def event_view(entity_query: str, markets: list[Market]) -> dict:
         "markets": sum(len(c.markets) for c in matched),
         "violations": transitive_entailment_violations(
             [m for c in matched for m in c.markets]),
+        "term_structures": term_structures([m for c in matched for m in c.markets]),
     }

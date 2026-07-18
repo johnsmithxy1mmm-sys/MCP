@@ -190,6 +190,7 @@ def register(mcp: FastMCP) -> None:
                 },
                 # History-calibrated probability (identity until enough outcomes resolve).
                 "calibration": deps.calibrate_probability(yes, market.category),
+                "quality": deps.quote_quality(yes, market.volume_usd, delay),
                 **({"options": options} if options else {}),
                 **({"microstructure": micro} if micro else {}),
                 "delayed": True,
