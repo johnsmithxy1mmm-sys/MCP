@@ -62,6 +62,27 @@ async def metrics(_request: Request):
     return PlainTextResponse(METRICS.render_prometheus(), media_type="text/plain; version=0.0.4")
 
 
+@mcp.custom_route("/revenue", methods=["GET"])
+async def revenue(request: Request) -> JSONResponse:
+    """Operator-only revenue reconciliation (charged vs settled). Requires the
+    X-Admin-Token header to match ADMIN_TOKEN; 404 when no token is configured."""
+    import hmac
+    import os
+
+    admin = os.getenv("ADMIN_TOKEN")
+    if not admin:
+        return JSONResponse({"error": "revenue endpoint disabled (no ADMIN_TOKEN)"}, status_code=404)
+    provided = request.headers.get("x-admin-token", "")
+    if not hmac.compare_digest(provided, admin):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    import anyio
+
+    from .billing.middleware import get_billing
+
+    summary = await anyio.to_thread.run_sync(get_billing().revenue_summary)
+    return JSONResponse(summary)
+
+
 @mcp.custom_route("/pubkey", methods=["GET"])
 async def pubkey(_request: Request) -> JSONResponse:
     """Public Ed25519 key so anyone can verify signed provenance (Trust v2)."""

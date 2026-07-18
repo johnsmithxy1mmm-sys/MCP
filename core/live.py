@@ -73,6 +73,7 @@ class LiveRepo:
         self._markets = _TTLCache(_MARKET_TTL)
         self._books = _TTLCache(_BOOK_TTL)
         self._history = HistoryStore()
+        self._by_id: dict[tuple[str, str], Market] = {}  # (venue, id) -> Market index
 
     # -- internal ---------------------------------------------------------
     def _all_markets(self, query: str | None = None) -> list[Market]:
@@ -85,9 +86,10 @@ class LiveRepo:
                 out.extend(adapter.fetch_markets(query=query))
             except AdapterError:
                 continue  # one venue down shouldn't kill the whole response
-        # Ingest a history point for every observed market (fresh fetch only).
+        # Ingest a history point + index every observed market (fresh fetch only).
         for m in out:
             self._history.record_market(m)
+            self._by_id[(m.venue.value, m.market_id)] = m
         self._markets.put(query or "*", out)
         return out
 
@@ -103,10 +105,12 @@ class LiveRepo:
         return out
 
     def get_market(self, venue: str, market_id: str) -> Market | None:
-        for m in self._all_markets():
-            if m.venue.value == venue and m.market_id == market_id:
-                return m
-        return None
+        hit = self._by_id.get((venue, market_id))
+        if hit is not None:
+            return hit
+        # Cold index (or unseen id): populate via a full fetch, then O(1) lookup.
+        self._all_markets()
+        return self._by_id.get((venue, market_id))
 
     def get_orderbook(self, venue: str, market_id: str) -> OrderbookSnapshot | None:
         key = (venue, market_id)

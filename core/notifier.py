@@ -40,13 +40,23 @@ def notify_alerts(alerts: list[dict]) -> bool:
         import httpx
     except ImportError:  # pragma: no cover - httpx is a hard dep in practice
         return False
+    import json
+
+    body = json.dumps({"alerts": alerts}).encode()
     headers = {"Content-Type": "application/json"}
     secret = os.getenv("ALERT_WEBHOOK_SECRET")
     if secret:
+        # HMAC-SHA256 over the exact body so the receiver can verify authenticity
+        # (a bearer token alone can be replayed; a signature binds to the payload).
+        import hashlib
+        import hmac
+
+        sig = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+        headers["X-Signature"] = f"sha256={sig}"
         headers["Authorization"] = f"Bearer {secret}"
     try:
         with httpx.Client(timeout=float(os.getenv("HTTP_TIMEOUT", "12"))) as client:
-            resp = client.post(url, json={"alerts": alerts}, headers=headers)
+            resp = client.post(url, content=body, headers=headers)
         return 200 <= resp.status_code < 300
     except Exception:
         log.warning("alert webhook delivery failed (%d alerts queued for poll)", len(alerts))

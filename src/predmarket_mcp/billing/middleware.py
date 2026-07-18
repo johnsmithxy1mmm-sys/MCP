@@ -73,6 +73,26 @@ class BillingContext:
         self.nonces = NonceStore(settings.metering_db_url)
         self.facilitator: Facilitator = build_facilitator(settings)
 
+    def revenue_summary(self) -> dict:
+        """Reconcile what we CHARGED (metered paid calls) against what SETTLED
+        (receipts) — business-level 'money not lost/doubled'."""
+        try:
+            usage = self.metering.records()
+        except Exception:
+            usage = []
+        paid = [u for u in usage if u.get("paid_via")]
+        charged = round(sum(float(u.get("price_usd") or 0) for u in paid), 6)
+        receipts = self.receipts.all()
+        settled = round(sum(float(r.get("amount_usd") or 0) for r in receipts), 6)
+        return {
+            "charged_usd": charged,
+            "charged_calls": len(paid),
+            "settled_usd": settled,
+            "settled_receipts": len(receipts),
+            "discrepancy_usd": round(charged - settled, 6),
+            "currency": self.pricing.currency,
+        }
+
     # -- gating helpers ----------------------------------------------------
     def gate_active(self) -> bool:
         return self.settings.paid_enabled and self.settings.payment_rail == "x402"
@@ -171,6 +191,13 @@ class MeteringMiddleware(Middleware):
             raise
         finally:
             latency_ms = round((time.perf_counter() - start) * 1000, 2)
+            try:
+                from ..ops import METRICS
+
+                METRICS.observe("tool_latency_ms", latency_ms)
+                METRICS.inc("paid_calls_total")
+            except Exception:
+                pass
             usage = UsageRecord(
                 tool_name=tool_name,
                 price_usd=charged,

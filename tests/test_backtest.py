@@ -52,6 +52,24 @@ def test_no_trades_when_price_never_dips():
     assert "no trades" in out["note"]
 
 
+def test_walk_forward_flags_generalization():
+    from core.backtest import walk_forward
+
+    # A steady mean-reverting pattern that repeats in both halves generalizes.
+    block = [0.60] * 10 + [0.50, 0.52, 0.58, 0.60]
+    wf = walk_forward(_series(block * 3), BacktestParams(
+        entry_edge=0.05, exit_edge=0.01, window=10, size_usd=1000,
+        slippage_bps=0, venue=Venue.POLYMARKET))
+    assert wf is not None
+    assert "in_sample_return" in wf and "out_of_sample_return" in wf
+    assert isinstance(wf["generalizes"], bool)
+
+
+def test_walk_forward_none_on_short_history():
+    from core.backtest import walk_forward
+    assert walk_forward(_series([0.5] * 5), BacktestParams(window=10)) is None
+
+
 @pytest.mark.asyncio
 async def test_simulate_strategy_tool(client):
     r = (await client.call_tool("simulate_strategy", {

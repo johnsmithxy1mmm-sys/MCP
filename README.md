@@ -173,6 +173,18 @@ API-key rail is wired via FastMCP helpers (`auth.py`), enabled by env.
 **Entailment & term-structure arbitrage** (C1) and **value-based pricing** for
 `get_market_history` (scales with range, capped) need no flags — always on.
 
+| **v4 — autonomy & product depth** | | |
+| `PERSISTENCE_MIN_SAMPLES` / `EXEC_HORIZON_SECONDS` | `20` / `60` | Edge-survival model: ranks `find_mispricing` by expected value (edge × P(survives the execution window)), learned from opportunity lifespans. |
+| `QUALITY_GATE` / `QUALITY_MIN` | `off` / `0.5` | Quote-quality guard: skip scans on stale/thin/crossed quotes. Advisory (surfaced in `evaluate_market`) unless the gate is on. |
+| `ADMIN_TOKEN` | — | Enables the operator-only `GET /revenue` (charged-vs-settled reconciliation); sent as `X-Admin-Token`. |
+| `ALERT_WEBHOOK_SECRET` (reuse) | — | Now also HMAC-signs the webhook body (`X-Signature: sha256=…`). |
+
+New surfaces: free `event://{entity}` resource (the whole market structure for a
+subject: related markets, implies/same_event/term_neighbor relations, transitive
+entailment violations, term structures); paid `assess_portfolio` tool (net
+exposure, correlation, portfolio Kelly, hedges); `simulate_strategy` now includes
+an out-of-sample walk-forward check.
+
 | **Horizontal scaling** | | *(single-instance defaults need nothing)* |
 | `REDIS_URL` | — | Shared backend for the x402 replay guard (atomic `SET NX`) and rate limiter (global fixed-window). **Required for correctness behind a load balancer** — without it each instance has its own replay set, so one signed payment could buy a call per instance. Degrades to local SQLite/memory if unset or `redis` isn't installed. |
 | `NONCE_TTL_SECONDS` | `2592000` | TTL for consumed-payment fingerprints in Redis (30d). |

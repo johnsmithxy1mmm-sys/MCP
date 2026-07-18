@@ -32,10 +32,11 @@ def test_notify_posts_to_webhook(monkeypatch):
         def __init__(self, *a, **k): ...
         def __enter__(self): return self
         def __exit__(self, *a): return False
-        def post(self, url, json, headers):
+        def post(self, url, content, headers):
             posted["url"] = url
-            posted["json"] = json
+            posted["content"] = content
             posted["auth"] = headers.get("Authorization")
+            posted["sig"] = headers.get("X-Signature")
             return _Resp()
 
     monkeypatch.setenv("ALERT_WEBHOOK_URL", "https://hook.example/alerts")
@@ -45,8 +46,10 @@ def test_notify_posts_to_webhook(monkeypatch):
 
     assert notifier.notify_alerts([{"a": 1}]) is True
     assert posted["url"] == "https://hook.example/alerts"
-    assert posted["json"] == {"alerts": [{"a": 1}]}
+    import json as _json
+    assert _json.loads(posted["content"]) == {"alerts": [{"a": 1}]}
     assert posted["auth"] == "Bearer s3cret"
+    assert posted["sig"].startswith("sha256=")  # HMAC signature present
 
 
 def test_notify_swallows_errors(monkeypatch):

@@ -74,6 +74,37 @@ def simulate(points: list[PricePoint], params: BacktestParams) -> dict:
     return _summarize(returns, equity, params.size_usd, max_dd)
 
 
+def walk_forward(points: list[PricePoint], params: BacktestParams, split: float = 0.7) -> dict | None:
+    """Out-of-sample check: fit-window on the first ``split`` of history, evaluate
+    on the rest. Exposes overfitting — a rule that only 'works' in-sample is a
+    trap, and no other backtest tool tells you that."""
+    n = len(points)
+    cut = int(n * split)
+    need = params.window + 2
+    if cut < need or (n - cut) < need:
+        return None
+    ins = simulate(points[:cut], params)
+    oos = simulate(points[cut:], params)
+    ins_ret, oos_ret = ins.get("total_return") or 0.0, oos.get("total_return") or 0.0
+    return {
+        "in_sample_return": ins_ret,
+        "out_of_sample_return": oos_ret,
+        "in_sample_trades": ins["trades"],
+        "out_of_sample_trades": oos["trades"],
+        # Same sign in and out of sample => the edge generalized, not fit to noise.
+        "generalizes": (oos_ret > 0) == (ins_ret > 0) and oos["trades"] > 0,
+    }
+
+
+def run(points: list[PricePoint], params: BacktestParams) -> dict:
+    """Full backtest: the summary plus an out-of-sample walk-forward check."""
+    summary = simulate(points, params)
+    wf = walk_forward(points, params)
+    if wf is not None:
+        summary["walk_forward"] = wf
+    return summary
+
+
 def _empty_result(note: str) -> dict:
     return {
         "trades": 0, "hit_rate": None, "total_return": 0.0,

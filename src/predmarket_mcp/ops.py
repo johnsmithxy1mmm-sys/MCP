@@ -30,10 +30,17 @@ class Metrics:
     def __init__(self):
         self._lock = threading.Lock()
         self._counters: dict[str, float] = {}
+        self._summaries: dict[str, tuple[float, int]] = {}  # name -> (sum, count)
 
     def inc(self, name: str, amount: float = 1.0) -> None:
         with self._lock:
             self._counters[name] = self._counters.get(name, 0.0) + amount
+
+    def observe(self, name: str, value: float) -> None:
+        """Record a sample (e.g. latency ms) into a sum/count summary."""
+        with self._lock:
+            s, c = self._summaries.get(name, (0.0, 0))
+            self._summaries[name] = (s + value, c + 1)
 
     def snapshot(self) -> dict[str, float]:
         with self._lock:
@@ -45,6 +52,13 @@ class Metrics:
             metric = f"predmarket_{name}"
             lines.append(f"# TYPE {metric} counter")
             lines.append(f"{metric} {value}")
+        with self._lock:
+            summaries = dict(self._summaries)
+        for name, (total, count) in sorted(summaries.items()):
+            metric = f"predmarket_{name}"
+            lines.append(f"# TYPE {metric} summary")
+            lines.append(f"{metric}_sum {round(total, 4)}")
+            lines.append(f"{metric}_count {count}")
         # Circuit-breaker states as a labeled gauge (0=closed,1=half_open,2=open).
         try:
             from core.circuit import breaker_states

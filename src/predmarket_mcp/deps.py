@@ -96,11 +96,12 @@ def calibrate_probability(p: float, category: str | None = None) -> dict:
 def backtest_strategy(
     venue: str, market_id: str, frm: datetime, to: datetime, params
 ) -> dict:
-    """Replay a mean-reversion rule over recorded history with honest costs (C4)."""
-    from core.backtest import simulate
+    """Replay a mean-reversion rule over recorded history with honest costs (C4)
+    plus an out-of-sample walk-forward check (F6)."""
+    from core.backtest import run
 
     points = get_history(venue, market_id, frm, to)
-    return simulate(points, params)
+    return run(points, params)
 
 
 def quote_quality(yes_price, volume_usd, data_age_seconds=None) -> dict:
