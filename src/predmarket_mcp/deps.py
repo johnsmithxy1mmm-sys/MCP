@@ -44,6 +44,15 @@ def list_venues() -> list[dict]:
     return repo.list_venues()
 
 
+def event_view(entity: str) -> dict:
+    """Event-graph view for an entity: related markets across venues + their
+    logical relations + transitive entailment violations (F3)."""
+    from core.eventgraph import event_view as _view
+
+    markets = repo.search_markets(entity, category=None, venue=None)
+    return _view(entity, markets)
+
+
 def get_market(venue: str, market_id: str) -> Market | None:
     return repo.get_market(venue, market_id)
 

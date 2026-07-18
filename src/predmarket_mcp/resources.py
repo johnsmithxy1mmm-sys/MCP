@@ -43,6 +43,19 @@ def register(mcp: FastMCP) -> None:
         }
 
     @mcp.resource(
+        "event://{entity}",
+        description=(
+            "Everything the markets say about one subject: all related markets "
+            "across venues, their logical relations (same_event, implies, "
+            "term_neighbor), and any transitive entailment violations (mispricings "
+            "that leak across a middle rung). Free — a map of an event's whole "
+            "market structure. e.g. event://bitcoin%20100k"
+        ),
+    )
+    def event_resource(entity: str) -> dict:
+        return {**deps.event_view(entity), **deps.staleness(deps.now())}
+
+    @mcp.resource(
         "market://{venue}/{market_id}",
         description=(
             "Snapshot of one prediction market (normalized YES/NO prices, implied "
