@@ -21,7 +21,7 @@ trades or holds funds.
 > The shared intelligence (matcher, signals, realizable-edge) lives in
 > `core/algorithms.py` and is used by **both** engines — not duplicated.
 
-## Tool catalog (10 tools, 2 resources, 1 prompt)
+## Tool catalog (11 tools, 2 resources, 1 prompt)
 
 Descriptions are the agent's only documentation, so they're written as copy.
 Every response carries freshness (`as_of` / `data_age_seconds`) and cost
@@ -161,6 +161,16 @@ API-key rail is wired via FastMCP helpers (`auth.py`), enabled by env.
 | `CIRCUIT_FAIL_MAX` / `CIRCUIT_RESET_TIMEOUT` | `5` / `30` | Per-venue circuit breaker: open after N failures, half-open probe after cooldown. |
 | `HISTORY_RETENTION_DAYS` | `90` | Prune history older than this (throttled). `0` = keep everything. |
 | `LOG_FORMAT` / `LOG_LEVEL` | `text` / `INFO` | `LOG_FORMAT=json` for structured logs. |
+| **v3 — Provable Alpha (the moat)** | | *(intelligence built on our own history/logic)* |
+| `CALIBRATION_MIN_SAMPLES` / `CALIBRATION_BINS` | `30` / `10` | Online probability calibration from resolution history (identity until enough outcomes). |
+| `ANALYST_ENABLED` / `ANTHROPIC_API_KEY` | `off` / — | Also powers the resolution-**basis** LLM diff (settlement-rule comparison); heuristic otherwise. |
+| `OPTIONS_ENABLED` / `DERIBIT_API_URL` | `off` / deribit.com | Options-implied probability cross-check (Breeden–Litzenberger) in `evaluate_market`. |
+| `MICROSTRUCTURE_WINDOW` | `20` | Lookback for the informed-flow / momentum read. |
+| `ANCHOR_ENABLED` / `ANCHOR_RPC_URL` / `ANCHOR_NETWORK` / `ANCHOR_MIN_INTERVAL` | `off` / — / `base-sepolia` / `3600` | On-chain anchoring of the track-record Merkle root (mock chain until an RPC is set). |
+| `KELLY_FRACTION` (reuse) | `0.5` | Kelly can be fed the **calibrated** probability, not the raw price. |
+
+**Entailment & term-structure arbitrage** (C1) and **value-based pricing** for
+`get_market_history` (scales with range, capped) need no flags — always on.
 
 ## Deploy
 
@@ -186,7 +196,7 @@ semantic matcher runs with no Hugging Face egress at runtime.
 ```
 src/predmarket_mcp/
   server.py     FastMCP app; /health, /metrics, /pubkey, /track-record; HTTP app + middleware
-  tools.py      the 10 tools (call core/, format for agents — no logic here)
+  tools.py      the 11 tools (call core/, format for agents — no logic here)
   resources.py  market:// + alerts:// resources
   prompts.py    arbitrage_scan_workflow
   config.py     env-driven settings (PAID_ENABLED flag)
@@ -198,9 +208,16 @@ src/predmarket_mcp/
 core/
   models.py     canonical pydantic models
   algorithms.py shared matcher / signals / realizable-edge + risk finalize (mock + live reuse)
+  entailment.py logical-implication + probability term-structure arbitrage (C1)
+  basis.py      resolution-criteria diff / settlement basis risk (C2)
+  calibration.py isotonic online probability calibration from history (C3)
+  backtest.py   mean-reversion backtester over recorded history (C4)
+  options.py    Breeden-Litzenberger options-implied probability, Deribit (C7)
+  microstructure.py informed-flow / momentum read from the tape (C8)
+  anchor.py     on-chain anchoring of the track-record Merkle root (C6)
   fairvalue.py  liquidity-weighted cross-venue consensus + deviation (B3)
   sizing.py     fractional-Kelly stake + market-impact curve (B4)
-  analyst.py    LLM resolution-risk analyst + offline heuristic (B5)
+  analyst.py    LLM resolution-risk + basis analyst + offline heuristic (B5/C2)
   merkle.py     Merkle commitments/proofs for the track record (B6)
   circuit.py    per-venue circuit breaker (B7)
   streaming.py  WSS price ingestion (B1) · notifier.py  webhook alert push (B2)
