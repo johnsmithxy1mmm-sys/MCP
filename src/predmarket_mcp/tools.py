@@ -150,11 +150,11 @@ def register(mcp: FastMCP) -> None:
         tags={"free"},
         meta=_paid_meta("evaluate_market"),
         description=(
-            "Get normalized YES/NO prices and implied probability for one market. "
-            "FREE TIER RETURNS A GENUINELY DELAYED PRICE (~60s old, read from the "
-            "history store; `as_of` is the true snapshot time, `delayed: true`). "
-            "Realtime prices and live orderbook depth are paid (estimate_execution / "
-            "find_mispricing). Call to judge whether a market is worth acting on."
+            "Normalized YES/NO prices + implied probability for one market. FREE TIER "
+            "RETURNS A GENUINELY DELAYED PRICE (~60s, from history; `as_of` is the true "
+            "time, `delayed: true`), plus history-calibrated probability, and "
+            "(when available) options-implied and microstructure reads. Realtime prices "
+            "+ depth are paid (estimate_execution / find_mispricing)."
         ),
     )
     def evaluate_market(
@@ -220,14 +220,13 @@ def register(mcp: FastMCP) -> None:
         tags={"paid"},
         meta=_paid_meta("find_mispricing"),
         description=(
-            "Flagship scanner. Scans LIVE opportunities whose REALIZABLE EDGE (after "
-            "fees, gas and slippage — never gross) exceeds `min_edge` (e.g. 0.02 = 2%). "
-            "Detects cross_venue spreads, single-market bundles, dutch_book "
-            "(combinatorial arb across mutually-exclusive outcomes), and entailment "
-            "(risk-free logical-implication / probability term-structure violations — "
-            "e.g. P(BTC>150k) priced above P(BTC>100k)). Each result is risk-adjusted: "
-            "holding_days, annualized_edge, resolution_risk. Realtime. "
-            f"Costs {price_str('find_mispricing')} per call — check price before calling."
+            "Flagship scanner. LIVE opportunities whose REALIZABLE EDGE (after fees, "
+            "gas, slippage — never gross) exceeds `min_edge` (0.02 = 2%). Kinds: "
+            "cross_venue, bundle, dutch_book, and entailment (risk-free logic/term-"
+            "structure violations, e.g. P(BTC>150k) priced above P(BTC>100k)). Ranked "
+            "by expected_value (edge x survival_probability); each carries "
+            "holding_days, annualized_edge, resolution_risk, fair_value. Realtime. "
+            f"Costs {price_str('find_mispricing')} per call."
         ),
     )
     def find_mispricing(
@@ -312,12 +311,10 @@ def register(mcp: FastMCP) -> None:
         tags={"paid"},
         meta=_paid_meta("estimate_execution"),
         description=(
-            "Before you act: given these legs and a dollar size, compute the REALIZABLE "
-            "EDGE AFTER fees, gas and slippage from current orderbook depth. Returns "
-            "fillable size, average fill price and net edge. Optionally pass `bankroll_usd` "
-            "and `fair_value` (your probability estimate) to also get the Kelly-optimal "
-            "stake and a market-impact curve (how edge decays as you size up). "
-            f"Costs {price_str('estimate_execution')} per call."
+            "Before you act: given legs + a dollar size, compute REALIZABLE EDGE after "
+            "fees, gas and slippage from live depth — fillable size, avg fill price, net "
+            "edge. Optionally pass `bankroll_usd` + `fair_value` for the Kelly stake and "
+            f"a market-impact curve. Costs {price_str('estimate_execution')} per call."
         ),
     )
     def estimate_execution(
@@ -435,6 +432,30 @@ def register(mcp: FastMCP) -> None:
             "realtime": False,
             **deps.staleness(deps.now()),
             **_cost_note("simulate_strategy"),
+        }
+
+    @mcp.tool(
+        tags={"paid"},
+        meta=_paid_meta("assess_portfolio"),
+        description=(
+            "Portfolio risk manager for an agent running a book. From your current "
+            "legs: net exposure grouped by event (many legs can be one concentrated "
+            "bet), cross-market correlation from history, a correlation-adjusted "
+            "portfolio Kelly stake (pass `bankroll_usd` + `fair_values`), and concrete "
+            f"hedges on other venues. Costs {price_str('assess_portfolio')} per call."
+        ),
+    )
+    def assess_portfolio(
+        legs: Annotated[list[Leg], Field(description="Your current positions. Each: {venue, market_id, side: yes|no}.")],
+        bankroll_usd: Annotated[float | None, Field(default=None, gt=0, description="Optional: bankroll, for a Kelly-sized recommendation.")] = None,
+        fair_values: Annotated[dict[str, float] | None, Field(default=None, description="Optional: your fair YES probability per market_id, for sizing.")] = None,
+    ) -> dict:
+        result = deps.assess_portfolio(legs, bankroll_usd, fair_values)
+        return {
+            "portfolio": result,
+            "realtime": True,
+            **deps.staleness(deps.now()),
+            **_cost_note("assess_portfolio"),
         }
 
     @mcp.tool(

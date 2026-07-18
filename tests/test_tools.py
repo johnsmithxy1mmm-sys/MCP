@@ -12,6 +12,7 @@ async def test_catalog_size(client):
     tools = await client.list_tools()
     names = sorted(t.name for t in tools)
     assert names == [
+        "assess_portfolio",
         "compare_across_venues",
         "estimate_execution",
         "evaluate_market",

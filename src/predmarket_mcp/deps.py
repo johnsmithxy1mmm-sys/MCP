@@ -186,6 +186,20 @@ def execution_sizing(
     return _sizing(legs, size_usd, repo.get_orderbook, bankroll_usd, fair_value)
 
 
+def assess_portfolio(
+    legs: list[Leg], bankroll_usd: float | None = None,
+    fair_values: dict | None = None,
+) -> dict:
+    """Portfolio-level exposure, correlation, sizing and hedges (F4)."""
+    from core.portfolio import assess
+
+    return assess(
+        legs, get_market, get_history,
+        related_getter=lambda entity: repo.search_markets(entity, category=None, venue=None),
+        bankroll=bankroll_usd, fair_values=fair_values,
+    )
+
+
 # --- reconciliation / track record -----------------------------------------
 from core.reconciliation import get_reconciliation  # noqa: E402
 

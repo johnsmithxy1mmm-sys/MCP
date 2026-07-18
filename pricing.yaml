@@ -50,3 +50,6 @@ tools:
   simulate_strategy:
     tier: paid
     price_usd: 0.02
+  assess_portfolio:
+    tier: paid
+    price_usd: 0.03
