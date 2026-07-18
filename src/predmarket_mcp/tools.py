@@ -288,10 +288,14 @@ def register(mcp: FastMCP) -> None:
         cheaper = pair.a if pair.a.yes_price <= pair.b.yes_price else pair.b
         fair = deps.assess_fair_value([pair.a, pair.b])
         basis = deps.assess_basis(pair.a, pair.b)
+        # Learn from ground truth: record the match, report history-calibrated confidence.
+        deps.record_match(pair.a.market_id, pair.b.market_id, pair.confidence)
+        match_conf = deps.match_confidence(pair.confidence)
         return {
             "matched": True,
             "event": pair.event,
             "confidence": pair.confidence,
+            "calibrated_confidence": match_conf,
             "spread": round(pair.spread, 4),
             "cheaper_yes_venue": cheaper.venue.value,
             # Consensus fair value + which venue is rich/cheap vs it (not just the gap).

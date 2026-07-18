@@ -21,7 +21,7 @@ trades or holds funds.
 > The shared intelligence (matcher, signals, realizable-edge) lives in
 > `core/algorithms.py` and is used by **both** engines — not duplicated.
 
-## Tool catalog (12 tools, 4 resources, 1 prompt)
+## Tool catalog (12 tools, 6 resources, 1 prompt)
 
 Descriptions are the agent's only documentation, so they're written as copy.
 Every response carries freshness (`as_of` / `data_age_seconds`) and cost
@@ -185,6 +185,15 @@ entailment violations, term structures); paid `assess_portfolio` tool (net
 exposure, correlation, portfolio Kelly, hedges); `simulate_strategy` now includes
 an out-of-sample walk-forward check.
 
+**Implied distribution & dependency graph** (H): free `distribution://{entity}`
+resource reconstructs the market's whole implied distribution from a threshold
+ladder (survival curve, percentiles, implied mean, prob at any strike — the
+prediction-market vol surface); free `conditional://{event}` resource returns
+market-implied P(A|B) between related markets (Gaussian copula from price
+co-movement + exact logical overrides). The cross-venue matcher **learns from
+resolution ground truth** — `compare_across_venues` reports a history-calibrated
+match confidence, tuned by which past matches actually resolved the same way.
+
 **Native multi-outcome markets** (G): free `outcomes://{event}` resource
 reconstructs an N-outcome event (election, bracketed number) from its binary
 markets — **de-vigged** fair probabilities (margin removed so they sum to 1), the
@@ -229,8 +238,11 @@ semantic matcher runs with no Hugging Face egress at runtime.
 src/predmarket_mcp/
   server.py     FastMCP app; /health, /metrics, /pubkey, /track-record; HTTP app + middleware
   tools.py      the 11 tools (call core/, format for agents — no logic here)
-  resources.py  market:// · alerts:// · event:// · outcomes:// resources
+  resources.py  market:// · alerts:// · event:// · outcomes:// · distribution:// · conditional:// resources
   multioutcome.py native N-outcome markets: de-vig + complete-set dutch book (G)
+  distribution.py implied distribution from a threshold ladder — vol surface (H1)
+  conditional.py  market-implied P(A|B): Gaussian copula + logical overrides (H2)
+  matchlearn.py   matcher calibrated from resolution ground truth (H5)
   prompts.py    arbitrage_scan_workflow
   config.py     env-driven settings (PAID_ENABLED flag)
   deps.py       the ONLY seam into core/

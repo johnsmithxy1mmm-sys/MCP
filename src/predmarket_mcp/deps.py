@@ -306,7 +306,30 @@ def anchor_track_record() -> dict | None:
 
 
 def resolve_outcomes(outcomes: dict[str, int]) -> int:
-    return get_reconciliation().resolve(outcomes)
+    n = get_reconciliation().resolve(outcomes)
+    # Also teach the matcher: matched pairs that resolved the same were true
+    # matches; ones that diverged weren't (H5).
+    try:
+        from core.matchlearn import get_matchlearn
+
+        get_matchlearn().resolve(outcomes)
+    except Exception:
+        pass
+    return n
+
+
+def record_match(a_id: str, b_id: str, confidence: float) -> None:
+    """Note a surfaced cross-venue match so it can be scored at resolution (H5)."""
+    from core.matchlearn import get_matchlearn
+
+    get_matchlearn().record(a_id, b_id, confidence)
+
+
+def match_confidence(confidence: float) -> dict:
+    """History-calibrated true-match probability for a raw similarity (H5)."""
+    from core.matchlearn import get_matchlearn
+
+    return get_matchlearn().calibrate(confidence)
 
 
 # --- watches / alerts (push subscription model) ----------------------------
