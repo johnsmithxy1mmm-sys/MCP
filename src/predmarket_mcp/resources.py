@@ -56,6 +56,19 @@ def register(mcp: FastMCP) -> None:
         return {**deps.event_view(entity), **deps.staleness(deps.now())}
 
     @mcp.resource(
+        "distribution://{entity}",
+        description=(
+            "The market's full IMPLIED DISTRIBUTION for a numeric event, "
+            "reconstructed from a ladder of 'X above K' threshold markets — the "
+            "prediction-market analogue of an options vol surface. Returns the "
+            "survival curve P(X>k), percentiles (p10/median/p90), implied mean, and "
+            "the implied probability at any strike. Free. e.g. distribution://bitcoin"
+        ),
+    )
+    def distribution_resource(entity: str) -> dict:
+        return {**deps.distribution_view(entity), **deps.staleness(deps.now())}
+
+    @mcp.resource(
         "outcomes://{event}",
         description=(
             "Native multi-outcome view of an event with N mutually-exclusive "

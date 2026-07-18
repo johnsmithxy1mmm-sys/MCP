@@ -53,6 +53,15 @@ def event_view(entity: str) -> dict:
     return _view(entity, markets)
 
 
+def distribution_view(entity: str) -> dict:
+    """Implied probability distribution for a numeric event from its threshold
+    ladder: survival curve, percentiles, tail probs, implied mean (H1)."""
+    from core.distribution import view as _view
+
+    markets = repo.search_markets(entity, category=None, venue=None)
+    return _view(entity, markets)
+
+
 def outcome_view(event: str) -> dict:
     """Native multi-outcome view for an event group: de-vigged probabilities,
     overround, favorite, and a completeness-aware full dutch book (G)."""

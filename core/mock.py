@@ -90,6 +90,25 @@ _MARKETS: list[Market] = [
         no_price=0.34,
         volume_usd=560_000,
     ),
+    # A threshold ladder on the same quantity -> an implied distribution (H1).
+    Market(
+        venue=Venue.POLYMARKET,
+        market_id="pm-btc-150k-2026",
+        title="Will Bitcoin close above $150k at end of 2026?",
+        category="crypto",
+        yes_price=0.45,
+        no_price=0.55,
+        volume_usd=1_120_000,
+    ),
+    Market(
+        venue=Venue.POLYMARKET,
+        market_id="pm-btc-200k-2026",
+        title="Will Bitcoin close above $200k at end of 2026?",
+        category="crypto",
+        yes_price=0.22,
+        no_price=0.78,
+        volume_usd=740_000,
+    ),
     Market(
         venue=Venue.POLYMARKET,
         market_id="pm-fed-cut-sep",
