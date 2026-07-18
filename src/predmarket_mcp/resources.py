@@ -56,6 +56,19 @@ def register(mcp: FastMCP) -> None:
         return {**deps.event_view(entity), **deps.staleness(deps.now())}
 
     @mcp.resource(
+        "conditional://{event}",
+        description=(
+            "Market-implied CONDITIONAL probabilities P(A|B) among related markets "
+            "for an event — a dependency graph agents can reason over ('if B, then "
+            "how likely is A?'). Estimated with a Gaussian copula (correlation from "
+            "price history) and exact logical overrides (entailment => 1, mutual "
+            "exclusion => 0). Free. e.g. conditional://bitcoin"
+        ),
+    )
+    def conditional_resource(event: str) -> dict:
+        return {**deps.conditional_view(event), **deps.staleness(deps.now())}
+
+    @mcp.resource(
         "distribution://{entity}",
         description=(
             "The market's full IMPLIED DISTRIBUTION for a numeric event, "

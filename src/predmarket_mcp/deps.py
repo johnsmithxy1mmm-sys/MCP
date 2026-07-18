@@ -53,6 +53,42 @@ def event_view(entity: str) -> dict:
     return _view(entity, markets)
 
 
+def conditional_view(event: str, limit: int = 6) -> dict:
+    """Market-implied conditional probabilities P(A|B) among related markets:
+    Gaussian copula (correlation from history) with logical overrides (H2)."""
+    from core.conditional import pairwise
+    from core.eventgraph import build_clusters
+
+    markets = repo.search_markets(event, category=None, venue=None)
+    markets = sorted(markets, key=lambda m: m.volume_usd or 0, reverse=True)[:limit]
+    if len(markets) < 2:
+        return {"event": event, "found": False, "conditionals": []}
+    # Exact overrides: entailment (P(weak|strong)=1) and mutual exclusion (=0).
+    logical: dict[tuple[str, str], float] = {}
+    for cluster in build_clusters(markets).values():
+        for rel in cluster.relations:
+            if rel["type"] == "implies":
+                logical[(rel["from"], rel["to"])] = 1.0  # P(weak | strong) = 1
+    by_group: dict[str, list[str]] = {}
+    for m in markets:
+        if m.event_group:
+            by_group.setdefault(m.event_group, []).append(m.market_id)
+    for ids in by_group.values():
+        for x in ids:
+            for y in ids:
+                if x != y:
+                    logical[(x, y)] = 0.0  # mutually exclusive -> P(x | y) = 0
+
+    from datetime import timedelta
+
+    def hist(venue, market_id):
+        end = now()
+        return get_history(venue, market_id, end - timedelta(days=30), end)
+
+    return {"event": event, "found": True,
+            "conditionals": pairwise(markets, hist, logical)}
+
+
 def distribution_view(entity: str) -> dict:
     """Implied probability distribution for a numeric event from its threshold
     ladder: survival curve, percentiles, tail probs, implied mean (H1)."""
