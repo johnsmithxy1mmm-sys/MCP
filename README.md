@@ -185,6 +185,14 @@ entailment violations, term structures); paid `assess_portfolio` tool (net
 exposure, correlation, portfolio Kelly, hedges); `simulate_strategy` now includes
 an out-of-sample walk-forward check.
 
+**Capital-velocity strategy** (I): `find_mispricing` prices TIME, not just edge —
+every opportunity carries `velocity` metrics (capital_efficiency = EV per locked
+day, compound_annual_growth under recycling, early-exit liquidity from book
+depth), `rank="velocity"` puts the fastest capital turnover first, and passing
+`bankroll_usd` + `horizon_days` returns a **rotation_plan**: allocations across
+short-cycle opportunities with a projected compounded bankroll as capital
+recycles (`VELOCITY_DEFAULT_DAYS`, `ROTATION_MAX_POSITIONS`).
+
 **Implied distribution & dependency graph** (H): free `distribution://{entity}`
 resource reconstructs the market's whole implied distribution from a threshold
 ladder (survival curve, percentiles, implied mean, prob at any strike — the

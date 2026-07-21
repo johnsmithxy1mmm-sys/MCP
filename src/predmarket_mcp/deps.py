@@ -361,6 +361,7 @@ def rank_by_expected_value(opps: list[Opportunity], observe_full: bool) -> list[
     keep accruing even if no watches/alert engine are running.
     """
     from core.persistence import get_persistence
+    from core.velocity import annotate_velocity
 
     store = get_persistence()
     if observe_full:
@@ -368,7 +369,25 @@ def rank_by_expected_value(opps: list[Opportunity], observe_full: bool) -> list[
             store.observe(opps)
         except Exception:
             pass
-    return store.annotate(opps)
+    ranked = store.annotate(opps)
+    # Attach capital-velocity metrics (holding, efficiency, early-exit) — the
+    # fast-turnover strategy reads these; EV ranking stays the default.
+    return annotate_velocity(ranked, get_orderbook)
+
+
+def rank_by_velocity(opps: list[Opportunity]) -> list[Opportunity]:
+    """Re-rank by capital velocity — EV per day of locked capital (I1)."""
+    from core.velocity import rank_by_velocity as _rank
+
+    return _rank(opps)
+
+
+def rotation_plan(opps: list[Opportunity], bankroll_usd: float,
+                  horizon_days: float = 30.0) -> dict:
+    """Bankroll rotation plan across short-cycle opportunities (I1)."""
+    from core.velocity import rotation_plan as _plan
+
+    return _plan(opps, bankroll_usd, horizon_days)
 
 
 # If ALERT_ENGINE is set, a background thread does the firing (poll becomes

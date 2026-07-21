@@ -80,6 +80,7 @@ _MARKETS: list[Market] = [
         yes_price=0.71,
         no_price=0.29,
         volume_usd=2_040_000,
+        close_time=datetime(2026, 12, 31, tzinfo=timezone.utc),
     ),
     Market(
         venue=Venue.KALSHI,
@@ -89,6 +90,7 @@ _MARKETS: list[Market] = [
         yes_price=0.66,
         no_price=0.34,
         volume_usd=560_000,
+        close_time=datetime(2026, 12, 31, tzinfo=timezone.utc),
     ),
     # A threshold ladder on the same quantity -> an implied distribution (H1).
     Market(
@@ -99,6 +101,7 @@ _MARKETS: list[Market] = [
         yes_price=0.45,
         no_price=0.55,
         volume_usd=1_120_000,
+        close_time=datetime(2026, 12, 31, tzinfo=timezone.utc),
     ),
     Market(
         venue=Venue.POLYMARKET,
@@ -108,6 +111,7 @@ _MARKETS: list[Market] = [
         yes_price=0.22,
         no_price=0.78,
         volume_usd=740_000,
+        close_time=datetime(2026, 12, 31, tzinfo=timezone.utc),
     ),
     Market(
         venue=Venue.POLYMARKET,
@@ -117,6 +121,7 @@ _MARKETS: list[Market] = [
         yes_price=0.40,
         no_price=0.60,
         volume_usd=890_000,
+        close_time=datetime(2026, 9, 17, tzinfo=timezone.utc),
     ),
     Market(
         venue=Venue.KALSHI,
@@ -126,6 +131,7 @@ _MARKETS: list[Market] = [
         yes_price=0.43,
         no_price=0.57,
         volume_usd=610_000,
+        close_time=datetime(2026, 9, 17, tzinfo=timezone.utc),
     ),
 ]
 

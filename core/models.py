@@ -134,6 +134,11 @@ class Opportunity(BaseModel):
         description="realizable_edge weighted by survival_probability — the "
         "honest ranking key ('an edge you can actually reach').",
     )
+    velocity: dict | None = Field(
+        default=None,
+        description="Capital-velocity metrics: capital_efficiency (EV per locked "
+        "day), compound_annual_growth under recycling, early-exit liquidity.",
+    )
 
 
 class Outcome(BaseModel):

@@ -127,11 +127,10 @@ def register(mcp: FastMCP) -> None:
         tags={"free"},
         meta=_paid_meta("track_record"),
         description=(
-            "Verifiable track record for this server's calls. Reports how flagged "
-            "opportunities actually performed once their markets resolved: hit_rate, "
-            "mean predicted vs realized edge (edge_slippage), and a Brier score on the "
-            "implied probabilities surfaced (lower is better). Free — call this to "
-            "decide how much to trust find_mispricing before paying for it."
+            "Verifiable track record: how flagged opportunities actually performed at "
+            "resolution — hit_rate, predicted-vs-realized edge_slippage, Brier score, "
+            "Merkle commitment. Free — check how much to trust find_mispricing before "
+            "paying for it."
         ),
     )
     def track_record() -> dict:
@@ -234,11 +233,16 @@ def register(mcp: FastMCP) -> None:
         min_edge: Annotated[float, Field(ge=0, le=1, description="Minimum realizable edge, e.g. 0.02 for 2%.")],
         kind: Annotated[Literal["bundle", "cross_venue", "dutch_book", "entailment"] | None, Field(description="Optional: restrict to one opportunity kind.")] = None,
         category: Annotated[str | None, Field(description="Optional filter: politics, crypto, economics.")] = None,
+        rank: Annotated[Literal["expected_value", "velocity"], Field(description="velocity = fastest capital turnover (EV per locked day) first.")] = "expected_value",
+        bankroll_usd: Annotated[float | None, Field(default=None, gt=0, description="Optional: with horizon_days, returns a capital rotation_plan.")] = None,
+        horizon_days: Annotated[float, Field(gt=0, le=365, description="Rotation-plan horizon.")] = 30,
     ) -> dict:
         ops = deps.scan_opportunities(min_edge, kind, category)
         ops = deps.enrich_resolution_risk(ops)  # LLM resolution-risk (if enabled)
         # Rank by expected value (edge x survival), learning opportunity lifespans.
         ops = deps.rank_by_expected_value(ops, observe_full=(kind is None and category is None))
+        if rank == "velocity":
+            ops = deps.rank_by_velocity(ops)  # fast-turnover strategy
         deps.record_flagged(ops)  # track record: flag now, reconcile at resolution
         opportunities = [
             {
@@ -252,31 +256,36 @@ def register(mcp: FastMCP) -> None:
                 "fair_value": o.fair_value,
                 "survival_probability": o.survival_probability,
                 "expected_value": o.expected_value,
+                "velocity": o.velocity,
                 "max_size_usd": o.max_size_usd,
                 "legs": [{"venue": l.venue.value, "market_id": l.market_id, "side": l.side.value} for l in o.legs],
             }
             for o in ops
         ]
-        return {
+        response = {
             "opportunities": opportunities,
             "count": len(ops),
             "min_edge": min_edge,
+            "rank": rank,
             "realtime": True,
             "provenance": provenance(opportunities),  # tamper-evident signature
             **deps.staleness(deps.now()),
             **_cost_note("find_mispricing"),
         }
+        if bankroll_usd:
+            # Capital-rotation plan: deploy across short cycles, recycle on resolve.
+            response["rotation_plan"] = deps.rotation_plan(ops, bankroll_usd, horizon_days)
+        return response
 
     @mcp.tool(
         tags={"paid"},
         meta=_paid_meta("compare_across_venues"),
         description=(
-            "For one real-world event, find the matching markets across venues and "
-            "report the spread, direction (which venue is cheaper on YES), consensus "
-            "fair value, AND settlement basis_risk — whether the two actually resolve "
-            "by the same rules (source/snapshot/cancellation). If same_contract is "
-            "false, the spread is a bet on which rulebook wins, not free money. "
-            f"Realtime. Costs {price_str('compare_across_venues')} per call."
+            "Match one event across venues: spread, cheaper-YES venue, consensus fair "
+            "value, history-calibrated match confidence, and settlement basis_risk — "
+            "whether the two resolve by the same rules. same_contract=false means the "
+            "spread is a bet on rulebooks, not free money. Realtime. "
+            f"Costs {price_str('compare_across_venues')} per call."
         ),
     )
     def compare_across_venues(
@@ -374,10 +383,9 @@ def register(mcp: FastMCP) -> None:
         tags={"paid"},
         meta=_paid_meta("watch"),
         description=(
-            "Subscribe to opportunities instead of polling for them. Registers a watch "
-            "for opportunities whose realizable_edge crosses `min_edge` (optionally "
-            "filtered by kind/category/event). Returns a watch_id and any immediate "
-            "matches; retrieve later ones with poll_alerts. "
+            "Subscribe instead of polling: registers a watch for opportunities whose "
+            "realizable_edge crosses `min_edge` (optional kind/category/event filters). "
+            "Returns a watch_id + immediate matches; later ones via poll_alerts. "
             f"Costs {price_str('watch')} per subscription."
         ),
     )
@@ -394,11 +402,10 @@ def register(mcp: FastMCP) -> None:
         tags={"paid"},
         meta=_paid_meta("simulate_strategy"),
         description=(
-            "Backtest a mean-reversion rule over this market's RECORDED price history "
-            "with honest costs (venue fees + slippage). Go long YES when price dips "
-            "`entry_edge` below its trailing mean, exit when it recovers to within "
-            "`exit_edge`. Returns trades, hit_rate, total_return, sharpe_per_trade and "
-            "max_drawdown. Validate a rule on real history before paying for live scans. "
+            "Backtest a mean-reversion rule over RECORDED history with honest costs: "
+            "long YES when price dips `entry_edge` below its trailing mean, exit at "
+            "`exit_edge`. Returns trades, hit_rate, total_return, sharpe, max_drawdown "
+            "+ an out-of-sample walk-forward check (overfitting detector). "
             f"Costs {price_str('simulate_strategy')} per call."
         ),
     )
