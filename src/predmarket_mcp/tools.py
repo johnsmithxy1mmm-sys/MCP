@@ -315,6 +315,8 @@ def register(mcp: FastMCP) -> None:
             "fair_value": fair["fair_value"],
             "fair_value_confidence": fair["confidence"],
             "deviations": fair["venues"],
+            # Best-estimate weighted by each venue's historical accuracy (J4).
+            "meta_consensus": deps.meta_consensus([pair.a, pair.b]),
             # Settlement basis risk: is the spread real, or a bet on which rulebook wins?
             "basis_risk": basis["basis_risk"],
             "same_contract": basis["same_contract"],

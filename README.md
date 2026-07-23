@@ -201,12 +201,17 @@ depth), `rank="velocity"` puts the fastest capital turnover first, and passing
 short-cycle opportunities with a projected compounded bankroll as capital
 recycles (`VELOCITY_DEFAULT_DAYS`, `ROTATION_MAX_POSITIONS`).
 
-**Implied distribution & dependency graph** (H): free `distribution://{entity}`
+**Implied distribution & dependency graph** (H/J): free `distribution://{entity}`
 resource reconstructs the market's whole implied distribution from a threshold
 ladder (survival curve, percentiles, implied mean, prob at any strike — the
-prediction-market vol surface); free `conditional://{event}` resource returns
-market-implied P(A|B) between related markets (Gaussian copula from price
-co-movement + exact logical overrides). The cross-venue matcher **learns from
+prediction-market vol surface) plus a **continuous lognormal fit** (J2:
+P(X in [a,b]) for any range, moments, quantiles); free `conditional://{event}`
+resource returns market-implied P(A|B) (Gaussian copula from co-movement + exact
+logical overrides) plus **Bayesian belief updates** (J3: multi-hop P(A | B,C…) by
+naive-Bayes log-odds). `compare_across_venues` adds a **calibration-weighted
+meta_consensus** (J4): a best-estimate + credible interval that weights each venue
+by how accurate it has historically been (Brier), learned as markets resolve —
+not just liquidity. The cross-venue matcher **learns from
 resolution ground truth** — `compare_across_venues` reports a history-calibrated
 match confidence, tuned by which past matches actually resolved the same way.
 

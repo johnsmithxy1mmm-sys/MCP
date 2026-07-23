@@ -21,8 +21,10 @@ _TMP_ANCHOR = Path(tempfile.gettempdir()) / "predmarket_test_anchor.db"
 _TMP_PERSIST = Path(tempfile.gettempdir()) / "predmarket_test_persist.db"
 _TMP_MATCHLEARN = Path(tempfile.gettempdir()) / "predmarket_test_matchlearn.db"
 _TMP_AUDIT = Path(tempfile.gettempdir()) / "predmarket_test_audit.db"
+_TMP_ACCURACY = Path(tempfile.gettempdir()) / "predmarket_test_accuracy.db"
 os.environ.setdefault("MATCHLEARN_DB_URL", f"sqlite:///{_TMP_MATCHLEARN}")
 os.environ.setdefault("AUDIT_DB_URL", f"sqlite:///{_TMP_AUDIT}")
+os.environ.setdefault("ACCURACY_DB_URL", f"sqlite:///{_TMP_ACCURACY}")
 os.environ.setdefault("METERING_DB_URL", f"sqlite:///{_TMP_DB}")
 os.environ.setdefault("RECON_DB_URL", f"sqlite:///{_TMP_RECON}")
 os.environ.setdefault("WATCH_DB_URL", f"sqlite:///{_TMP_WATCH}")
@@ -127,6 +129,15 @@ def clean_metering():
                 pass
     from core import auditbundle
     auditbundle.get_store.cache_clear()
+    # Venue-accuracy store (meta-consensus): clear samples + singleton.
+    if _TMP_ACCURACY.exists():
+        with sqlite3.connect(_TMP_ACCURACY) as conn:
+            try:
+                conn.execute("DELETE FROM venue_samples")
+            except sqlite3.OperationalError:
+                pass
+    from core import metaconsensus
+    metaconsensus.get_venue_accuracy.cache_clear()
     yield
 
 

@@ -157,6 +157,14 @@ def assess_basis(a: Market, b: Market) -> dict:
     return _assess(a, b)
 
 
+def meta_consensus(markets: list[Market]) -> dict:
+    """Calibration-weighted best-estimate + credible interval (J4): venues are
+    weighted by how accurate they've historically been, not just liquidity."""
+    from core.metaconsensus import meta_consensus as _mc
+
+    return _mc(markets)
+
+
 def calibrate_probability(p: float, category: str | None = None) -> dict:
     """History-calibrated probability for a raw price (C3). Identity until enough
     resolved outcomes exist."""

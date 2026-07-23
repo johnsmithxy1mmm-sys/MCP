@@ -102,6 +102,7 @@ class ReconciliationStore:
         pays 1 if the market resolved YES and a NO leg pays 1 if it resolved NO.
         """
         resolved = 0
+        venue_samples: list[tuple[str, float, int]] = []
         with self._lock, self._connect() as conn:
             rows = conn.execute("SELECT * FROM flagged WHERE resolved = 0").fetchall()
             for row in rows:
@@ -114,6 +115,12 @@ class ReconciliationStore:
                     oc = outcomes[l["market_id"]]
                     won = (l["side"] == "yes" and oc == 1) or (l["side"] == "no" and oc == 0)
                     payoff += 1.0 if won else 0.0
+                    # Venue calibration sample: the YES-equivalent price it showed
+                    # vs the realized outcome (for meta-consensus weighting, J4).
+                    venue = l.get("venue")
+                    if venue:
+                        yes_price = l["entry_price"] if l["side"] == "yes" else round(1 - l["entry_price"], 4)
+                        venue_samples.append((venue, yes_price, oc))
                 realized = round((payoff - cost) / cost, 4) if cost else 0.0
                 rep_outcome = outcomes[legs[0]["market_id"]]
                 conn.execute(
@@ -122,6 +129,16 @@ class ReconciliationStore:
                     (realized, rep_outcome, row["opp_id"]),
                 )
                 resolved += 1
+        # Feed venue accuracy outside the lock; best-effort, never breaks resolve.
+        if venue_samples:
+            try:
+                from .metaconsensus import get_venue_accuracy
+
+                store = get_venue_accuracy()
+                for venue, price, oc in venue_samples:
+                    store.record(venue, price, oc)
+            except Exception:
+                pass
         return resolved
 
     # -- metrics -----------------------------------------------------------
