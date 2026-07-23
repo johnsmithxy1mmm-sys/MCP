@@ -88,6 +88,42 @@ def test_handle_is_anonymous_and_stable():
     assert h != handle_for("auth-cafef00d")          # distinct per client
 
 
+# --- integrity guards -------------------------------------------------------
+def test_size_is_clamped_to_the_cap(tmp_path, monkeypatch):
+    # A self-declared paper size is free to claim; without the clamp, "$1B on a
+    # coin flip" would top the ranking. The cap bounds every trade's size.
+    monkeypatch.setenv("LEADERBOARD_MAX_SIZE_USD", "10000")
+    store = _store(tmp_path, 1, monkeypatch)
+    store.record("whale", 1_000_000_000, [_yes("m1", 0.5)], "flip")
+    store.resolve({"m1": 1})
+    s = store.client_summary("whale")
+    assert s["deployed_usd"] == 10000.0
+    assert s["total_pnl_usd"] == pytest.approx(10000 * 1.0, abs=1.0)  # not 1e9-scale
+
+
+def test_open_trade_cap_refuses_further_commits(tmp_path, monkeypatch):
+    monkeypatch.setenv("LEADERBOARD_MAX_OPEN", "2")
+    store = _store(tmp_path, 1, monkeypatch)
+    store.record("spammer", 100, [_yes("m1", 0.5)], "a")
+    store.record("spammer", 100, [_yes("m2", 0.5)], "b")
+    with pytest.raises(RuntimeError):
+        store.record("spammer", 100, [_yes("m3", 0.5)], "c")
+    # Resolution frees capacity.
+    store.resolve({"m1": 1, "m2": 1})
+    assert store.record("spammer", 100, [_yes("m3", 0.5)], "c")
+
+
+def test_commit_tool_degrades_gracefully_at_cap(monkeypatch):
+    # The tool path returns a response WITHOUT paper_trade_id instead of erroring.
+    monkeypatch.setenv("LEADERBOARD_MAX_OPEN", "0")
+    from predmarket_mcp import deps
+    from core.models import Leg, Side, Venue
+
+    tid = deps.commit_paper_trade(
+        "cid-cap", [Leg(venue=Venue.KALSHI, market_id="kx-btc-100k-eoy26", side=Side.YES)], 100)
+    assert tid is None
+
+
 # --- integration through deps + MCP surface ---------------------------------
 def test_resolver_grades_paper_trades():
     from predmarket_mcp import deps

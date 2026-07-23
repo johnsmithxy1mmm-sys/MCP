@@ -56,6 +56,56 @@ def test_get_provider_none_unless_enabled(monkeypatch):
     assert get_provider() is None                       # enabled but no feed url
 
 
+# --- TTL cache --------------------------------------------------------------
+class _CountingProvider:
+    def __init__(self, value=0.45):
+        self.calls = 0
+        self.value = value
+
+    def implied_probability(self, market):
+        self.calls += 1
+        return self.value
+
+
+def test_cached_probability_dedupes_reads(monkeypatch):
+    from core.reality import cached_probability, clear_cache
+
+    clear_cache()
+    monkeypatch.setenv("REALITY_TTL_SECONDS", "60")
+    p = _CountingProvider()
+    m = _m()
+    # One market evaluation reads the feed twice (K1 fusion + reality block);
+    # the cache must collapse that to a single fetch.
+    assert cached_probability(p, m) == 0.45
+    assert cached_probability(p, m) == 0.45
+    assert p.calls == 1
+
+
+def test_cache_expires_after_ttl(monkeypatch):
+    from core import reality
+
+    reality.clear_cache()
+    monkeypatch.setenv("REALITY_TTL_SECONDS", "0")   # everything is instantly stale
+    p = _CountingProvider()
+    m = _m()
+    reality.cached_probability(p, m)
+    reality.cached_probability(p, m)
+    assert p.calls == 2
+
+
+def test_cache_holds_negative_reads(monkeypatch):
+    # A downed feed (None) is cached too, so its timeout isn't paid on every call.
+    from core.reality import cached_probability, clear_cache
+
+    clear_cache()
+    monkeypatch.setenv("REALITY_TTL_SECONDS", "60")
+    p = _CountingProvider(value=None)
+    m = _m()
+    assert cached_probability(p, m) is None
+    assert cached_probability(p, m) is None
+    assert p.calls == 1
+
+
 # --- fusion into the house probability (K1 x K7) ----------------------------
 def test_reality_feeds_house_probability():
     from core.houseview import fuse

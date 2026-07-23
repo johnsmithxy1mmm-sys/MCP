@@ -82,6 +82,30 @@ def test_simulate_scenario_is_cluster_scoped():
     assert not any("fed" in i or "election" in i for i in ids)
 
 
+def test_low_volume_pin_survives_the_cap():
+    from predmarket_mcp import deps
+
+    # Regression: pm-btc-200k has the LOWEST volume in its cluster; with limit=1
+    # the volume cap used to evict the pinned market itself, so propagation lost
+    # its conditioner and returned zero-evidence empty shifts.
+    out = deps.simulate_scenario("pm-btc-200k-2026:yes", limit=1)
+    assert out["found"] is True and out["shifts"]
+    top = out["shifts"][0]
+    assert top["shift"] != 0
+    assert any(d["conditioner"] == "pm-btc-200k-2026" for d in top["drivers"])
+
+
+def test_find_market_uses_id_lookup_not_search(monkeypatch):
+    from predmarket_mcp import deps
+
+    # Regression: on the live engine a keyword search with an internal market id
+    # returns nothing — find_market must locate pins via the id index instead.
+    monkeypatch.setattr(deps.repo, "search_markets",
+                        lambda q, category=None, venue=None: [])
+    m = deps.find_market("kx-btc-100k-eoy26")
+    assert m is not None and m.market_id == "kx-btc-100k-eoy26"
+
+
 def test_simulate_scenario_unknown_pin():
     from predmarket_mcp import deps
 

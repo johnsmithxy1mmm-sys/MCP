@@ -160,6 +160,9 @@ def clean_metering():
                 pass
     from core import leaderboard
     leaderboard.get_leaderboard.cache_clear()
+    # Reality nowcast TTL cache (K7): a stubbed provider's value must not leak.
+    from core import reality
+    reality.clear_cache()
     yield
 
 

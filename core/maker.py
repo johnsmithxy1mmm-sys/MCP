@@ -53,6 +53,8 @@ def advise(
     vol_add = min(0.3, realized_vol * 10.0)  # choppy tape -> quote wider
     if vol_add > 0:
         adverse += vol_add
+        if vol_add >= 0.1:  # only worth naming when it materially widens the quote
+            factors.append("elevated realized volatility")
     serious = [f for f in flags if f in ("crossed_book", "wide_spread", "stale")]
     if serious:
         adverse += min(0.2, 0.1 * len(serious))

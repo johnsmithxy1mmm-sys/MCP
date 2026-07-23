@@ -17,6 +17,11 @@ ownership-checked ``portfolio://`` resource. SQLite by default.
 
   LEADERBOARD_DB_URL       sqlite:///leaderboard.db
   LEADERBOARD_MIN_RESOLVED resolved trades before an agent is ranked (default 3)
+  LEADERBOARD_MAX_SIZE_USD per-trade size cap — a self-declared paper size is
+                           clamped here so "$1B on a coin flip" can't fake the
+                           ranking (default 100000)
+  LEADERBOARD_MAX_OPEN     open (unresolved) trades per client, so one caller
+                           can't grow the store without bound (default 200)
 """
 
 from __future__ import annotations
@@ -82,14 +87,30 @@ class PaperTradeStore:
     def record(self, client_id: str, size_usd: float,
                legs: list[dict], title: str | None = None) -> str:
         """Log a committed paper trade. ``legs`` carry a yes-equivalent
-        ``entry_price`` each, so P&L can be computed at resolution."""
+        ``entry_price`` each, so P&L can be computed at resolution.
+
+        Integrity guards: the self-declared size is CLAMPED to the per-trade cap
+        (paper size is free to claim, so an uncapped size would let one lucky
+        coin flip top the ranking), and a client at the open-trade cap is
+        refused (unbounded pending rows = unbounded disk).
+        """
+        max_size = float(os.getenv("LEADERBOARD_MAX_SIZE_USD", "100000"))
+        max_open = int(os.getenv("LEADERBOARD_MAX_OPEN", "200"))
+        size = min(max_size, max(0.0, float(size_usd)))
         trade_id = "t_" + uuid.uuid4().hex[:12]
         with self._lock, self._connect() as conn:
+            open_count = conn.execute(
+                "SELECT COUNT(*) FROM paper_trades WHERE client_id = ? AND resolved = 0",
+                (client_id,)).fetchone()[0]
+            if open_count >= max_open:
+                raise RuntimeError(
+                    f"open paper-trade limit reached ({max_open}); "
+                    "wait for resolutions before committing more")
             conn.execute(
                 "INSERT INTO paper_trades (trade_id, client_id, ts, title, legs, size_usd) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
                 (trade_id, client_id, datetime.now(timezone.utc).isoformat(),
-                 title, json.dumps(legs), round(float(size_usd), 2)),
+                 title, json.dumps(legs), round(size, 2)),
             )
         return trade_id
 

@@ -18,11 +18,16 @@ internal model); the reality-implied probability then feeds the house forecast
   REALITY_ENABLED      unset (default) | on
   REALITY_NOWCAST_URL  endpoint returning {"probability": p} for an entity query
   REALITY_SIGNAL_MIN   |divergence| that counts as actionable (default 0.10)
+  REALITY_TTL_SECONDS  per-entity nowcast cache TTL (default 60) — one market read
+                       touches the feed twice (house fusion + the reality block),
+                       and evaluate_market is a hot path; the cache dedupes both
 """
 
 from __future__ import annotations
 
 import os
+import threading
+import time
 from abc import ABC, abstractmethod
 
 
@@ -67,6 +72,41 @@ class RealityProvider(ABC):
 
     @abstractmethod
     def implied_probability(self, market) -> float | None: ...
+
+
+# --- per-entity TTL cache (bounded) -----------------------------------------
+_CACHE_MAX = 1000
+_cache: dict[str, tuple[float, float | None]] = {}  # entity -> (ts, probability)
+_cache_lock = threading.Lock()
+
+
+def cached_probability(provider: RealityProvider, market) -> float | None:
+    """Provider read through a small per-entity TTL cache.
+
+    Nowcasts move on minutes, not milliseconds; without this, one market
+    evaluation hits the feed twice (K1 fusion + the reality block) and every
+    evaluation pays a network round trip. A negative read (None) is cached too,
+    so a downed feed doesn't add its timeout to every call.
+    """
+    ttl = float(os.getenv("REALITY_TTL_SECONDS", "60"))
+    key = _entity_key(market)
+    now = time.monotonic()
+    with _cache_lock:
+        hit = _cache.get(key)
+        if hit is not None and now - hit[0] < ttl:
+            return hit[1]
+    value = provider.implied_probability(market)
+    with _cache_lock:
+        _cache[key] = (now, value)
+        while len(_cache) > _CACHE_MAX:  # bounded: drop the oldest entry
+            _cache.pop(min(_cache, key=lambda k: _cache[k][0]))
+    return value
+
+
+def clear_cache() -> None:
+    """Drop cached nowcasts (tests / feed change)."""
+    with _cache_lock:
+        _cache.clear()
 
 
 class HttpNowcastProvider(RealityProvider):

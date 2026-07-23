@@ -103,7 +103,17 @@ def conditional_view(event: str, limit: int = 6) -> dict:
 
 def find_market(market_id: str) -> Market | None:
     """Locate a market by id across venues (best-effort; ids are unique in
-    practice). Backs the scenario engine's pin resolution."""
+    practice). Backs the scenario engine's pin resolution.
+
+    Direct id lookup per venue FIRST — on the live engine a keyword search with an
+    internal market id goes to the venue's text-search API and matches nothing,
+    while ``get_market`` hits the id index. Search is only the fallback."""
+    from core.models import Venue as _V
+
+    for v in _V:
+        m = repo.get_market(v.value, market_id)
+        if m is not None:
+            return m
     for m in repo.search_markets(market_id, category=None, venue=None):
         if m.market_id == market_id:
             return m
@@ -154,8 +164,9 @@ def simulate_scenario(spec: str, limit: int = 10) -> dict:
         mid = mid.strip()
         pins[mid] = 0.0 if side.strip().lower() == "no" else 1.0
 
-    pinned_markets = [m for mid in pins if (m := find_market(mid)) is not None]
-    unknown = [mid for mid in pins if find_market(mid) is None]
+    located = {mid: find_market(mid) for mid in pins}  # one lookup per pin
+    pinned_markets = [m for m in located.values() if m is not None]
+    unknown = [mid for mid, m in located.items() if m is None]
     if not pinned_markets:
         return {"found": False, "spec": spec, "unknown_markets": unknown,
                 "shifts": []}
@@ -178,8 +189,13 @@ def simulate_scenario(spec: str, limit: int = 10) -> dict:
             for m in universe:
                 if m.event_group == pm.event_group:
                     related[m.market_id] = m
-    markets = sorted(related.values(), key=lambda m: m.volume_usd or 0, reverse=True)
-    markets = markets[:max(limit + len(pins), 2)]
+    # Cap by volume, but NEVER drop a pinned market — losing the conditioner from
+    # the propagation set would silently produce zero-evidence "shifts".
+    pinned_ids = {m.market_id for m in pinned_markets}
+    ranked = sorted(related.values(), key=lambda m: m.volume_usd or 0, reverse=True)
+    cap = max(limit + len(pins), 2)
+    markets = [m for m in ranked if m.market_id in pinned_ids]
+    markets += [m for m in ranked if m.market_id not in pinned_ids][:cap - len(markets)]
 
     def hist(venue, market_id):
         end = now()
@@ -384,13 +400,15 @@ def options_divergence(market: Market) -> dict | None:
 
 def reality_divergence(market: Market) -> dict | None:
     """Market probability vs a real-world nowcast (K7): "market says X, the data
-    says Y". None unless REALITY_ENABLED + a feed URL and the feed has a read."""
-    from core.reality import divergence as _div, get_provider
+    says Y". None unless REALITY_ENABLED + a feed URL and the feed has a read.
+    Reads go through a short TTL cache so the K1 fusion and the reality block
+    share one fetch per entity instead of hammering the feed."""
+    from core.reality import cached_probability, divergence as _div, get_provider
 
     provider = get_provider()
     if provider is None:
         return None
-    implied = provider.implied_probability(market)
+    implied = cached_probability(provider, market)
     if implied is None:
         return None
     return _div(market.yes_price, implied)
@@ -420,14 +438,10 @@ def maker_advice(venue: str, market_id: str) -> dict | None:
 
 
 def _maker_fee(venue) -> float:
-    """Per-side maker fee estimate (probability units). Best-effort from the mock
-    fee model; 0 when unknown."""
-    try:
-        from core.mock import _FEE_BPS
-
-        return float(_FEE_BPS.get(venue, 0.0)) * 0.0  # taker-fee model; makers rebate
-    except Exception:
-        return 0.0
+    """Per-side maker fee (probability units). The venues here charge takers, not
+    makers (Polymarket 0, Kalshi fees the taker side), so the honest estimate is
+    0 — spread capture is gross of nothing. Override point if a fee venue lands."""
+    return float(_os.getenv("MAKER_FEE_PER_SIDE", "0"))
 
 
 def scan_opportunities(
