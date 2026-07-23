@@ -16,6 +16,9 @@ to read thresholds out of titles.
 
 from __future__ import annotations
 
+import math
+
+from .conditional import _phi, _probit
 from .entailment import parse_claim
 from .models import Market
 
@@ -140,13 +143,71 @@ def strike_arbitrage(markets: list[Market], strike: float, market_price: float,
     }
 
 
+# --- continuous fit (J2) ----------------------------------------------------
+def fit_lognormal(points: list[tuple[float, float]]) -> dict | None:
+    """Fit a lognormal to the survival ladder so the distribution becomes
+    CONTINUOUS — P(X in [a,b]) for ANY range, with principled tails, not just the
+    discrete rungs the market happens to list.
+
+    For lognormal, ln(X) ~ N(mu, sigma^2), so F(k) = Phi((ln k - mu)/sigma) and
+    ln(k_i) = mu + sigma * Phi^{-1}(F(k_i)). We regress ln(k) on the probit of the
+    CDF across the ladder; the intercept is mu, the slope is sigma.
+    """
+    obs = [(k, 1.0 - s) for k, s in points if k > 0 and 0.0 < (1.0 - s) < 1.0]  # (k, CDF)
+    if len(obs) < 2:
+        return None
+    xs = [_probit(cdf) for _, cdf in obs]   # z
+    ys = [math.log(k) for k, _ in obs]      # ln(k)
+    n = len(xs)
+    mx, my = sum(xs) / n, sum(ys) / n
+    var = sum((x - mx) ** 2 for x in xs)
+    if var <= 0:
+        return None
+    sigma = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / var
+    mu = my - sigma * mx
+    if sigma <= 0:
+        return None  # degenerate / non-monotone ladder
+    return {"model": "lognormal", "mu": round(mu, 6), "sigma": round(sigma, 6),
+            "mean": round(math.exp(mu + sigma * sigma / 2), 2),
+            "median": round(math.exp(mu), 2),
+            "mode": round(math.exp(mu - sigma * sigma), 2),
+            "stdev": round(math.sqrt((math.exp(sigma ** 2) - 1)) * math.exp(mu + sigma ** 2 / 2), 2)}
+
+
+def _lognormal_cdf(fit: dict, x: float) -> float:
+    if x <= 0:
+        return 0.0
+    return round(_phi((math.log(x) - fit["mu"]) / fit["sigma"]), 4)
+
+
+def prob_in_range(fit: dict, low: float | None, high: float | None) -> float:
+    """P(low <= X <= high) under the fitted continuous distribution."""
+    lo = _lognormal_cdf(fit, low) if low is not None else 0.0
+    hi = _lognormal_cdf(fit, high) if high is not None else 1.0
+    return round(max(0.0, hi - lo), 4)
+
+
+def quantile(fit: dict, p: float) -> float:
+    """Inverse CDF: the value x with P(X <= x) = p."""
+    return round(math.exp(fit["mu"] + fit["sigma"] * _probit(min(1 - 1e-9, max(1e-9, p)))), 2)
+
+
 def view(entity: str, markets: list[Market]) -> dict:
     """``distribution://{entity}`` payload — the implied distribution, minus
-    internal state."""
+    internal state. Includes a continuous lognormal fit when the ladder allows."""
     dist = build_distribution(markets)
     if dist is None:
         return {"entity": entity, "found": False,
                 "note": "need >= 2 'X above K' threshold markets for the same event"}
+    points = dist.get("_points") or []
     dist = dict(dist)
     dist.pop("_points", None)
+    fit = fit_lognormal(points)
+    if fit is not None:
+        dist["continuous"] = {
+            **fit,
+            "quantiles": {"p10": quantile(fit, 0.10), "p50": quantile(fit, 0.50),
+                          "p90": quantile(fit, 0.90)},
+            "note": "Continuous lognormal fit — use prob_in_range for any [a,b].",
+        }
     return {"entity": entity, "found": True, **dist}
