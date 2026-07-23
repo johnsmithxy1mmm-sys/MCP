@@ -64,7 +64,10 @@ def simulate(points: list[PricePoint], params: BacktestParams) -> dict:
                 # Venue fee on both fills (contracts ~ size / price).
                 fee = (venue_fee(params.venue, params.size_usd, entry_price)
                        + venue_fee(params.venue, params.size_usd, exit_price))
-                net = gross - fee / params.size_usd
+                # A position can't lose more than 100% — fees on top of a total
+                # wipeout must not push net below -1 (negative equity would then
+                # flip signs through the compounding below).
+                net = max(-1.0, gross - fee / params.size_usd)
                 returns.append(round(net, 6))
                 equity *= (1 + net)
                 peak = max(peak, equity)

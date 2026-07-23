@@ -53,6 +53,22 @@ def venue_fee(venue: Venue, notional_usd: float, price: float) -> float:
     return 0.0
 
 
+def _basket_payoff(legs: list[Leg]) -> float | None:
+    """Guaranteed payout per basket unit for the structures the scanner emits.
+
+    * mixed YES+NO pairs (bundle / cross-venue / entailment): exactly one side
+      pays -> 1 per unit;
+    * all-YES over an exclusive group (dutch under-round): one outcome pays -> 1;
+    * all-NO over N outcomes (dutch over-round): N-1 losers pay -> N-1;
+    * a single leg has NO guaranteed payout -> None (edge is just cost drag).
+    """
+    if len(legs) < 2:
+        return None
+    if all(l.side == Side.NO for l in legs):
+        return float(len(legs) - 1)
+    return 1.0
+
+
 def estimate_realizable_edge(
     legs: list[Leg],
     size_usd: float,
@@ -62,18 +78,26 @@ def estimate_realizable_edge(
 ) -> ExecutionEstimate:
     """Simulate filling ``legs`` for ``size_usd`` against live depth.
 
-    Returns edge NET of fees + gas + slippage (never gross), plus a per-venue
-    cost breakdown. Shared by the mock and live engines — the only difference is
-    where ``book_getter`` reads from.
+    Contract-based basket math: each leg's walk yields an average YES price and a
+    contract count; a NO leg's cost is the YES-complement (1 - avg bid). A basket
+    is executable only in COMPLETE units, so units = the thinnest leg's contracts,
+    capital = units x unit cost, and profit = units x (guaranteed payout - unit
+    cost) - fees - gas. ``realizable_edge`` is profit over deployed capital —
+    net of fees, gas and the slippage already embedded in the walked prices.
+    A single naked leg has no guaranteed payout: its "edge" is the pure execution
+    drag (negative), never a fantasy return. Shared by mock and live engines.
     """
     gas_usd = gas_usd or DEFAULT_GAS_USD
 
-    fillable = 0.0
     weighted_price = 0.0
+    filled_total = 0.0
     fees = 0.0
     gas = 0.0
     slippage = 0.0
-    gross_price_ref = 0.0
+    unit_cost = 0.0       # sum of per-leg YES-equivalent entry prices
+    ref_unit_cost = 0.0   # same at top-of-book (pre-slippage), for gross_edge
+    leg_contracts: list[float] = []
+    filled_legs = 0
     breakdown: dict[str, dict[str, float]] = {}
 
     per_leg_budget = size_usd / max(1, len(legs))
@@ -85,7 +109,6 @@ def estimate_realizable_edge(
         if not levels:
             continue
         ref = levels[0].price
-        gross_price_ref += ref
         remaining = per_leg_budget
         filled_here = 0.0
         cost = 0.0
@@ -96,31 +119,53 @@ def estimate_realizable_edge(
             cost += take * lvl.price
             filled_here += take
             remaining -= take
-        if filled_here <= 0:
+        if filled_here <= 0 or cost <= 0:
             continue
         avg = cost / filled_here
         leg_fee = venue_fee(leg.venue, filled_here, avg)
         leg_gas = gas_usd.get(leg.venue, 0.0)
         weighted_price += avg * filled_here
-        fillable += filled_here
+        filled_total += filled_here
         slippage += abs(avg - ref) * filled_here
         gas += leg_gas
         fees += leg_fee
+        filled_legs += 1
+        leg_contracts.append(filled_here / avg)
+        # YES-equivalent entry: a NO leg bought against the bid costs 1 - bid.
+        unit_cost += avg if leg.side == Side.YES else (1.0 - avg)
+        ref_unit_cost += ref if leg.side == Side.YES else (1.0 - ref)
         v = breakdown.setdefault(leg.venue.value, {"fees_usd": 0.0, "gas_usd": 0.0, "filled_usd": 0.0})
         v["fees_usd"] = round(v["fees_usd"] + leg_fee, 4)
         v["gas_usd"] = round(v["gas_usd"] + leg_gas, 4)
         v["filled_usd"] = round(v["filled_usd"] + filled_here, 2)
 
-    avg_fill = (weighted_price / fillable) if fillable else 0.0
-    gross_edge = round(len(legs) - gross_price_ref, 4) if gross_price_ref else 0.0
-    net = fillable - fees - gas - slippage
-    realizable = round((net / size_usd) if size_usd else 0.0, 4)
+    avg_fill = (weighted_price / filled_total) if filled_total else 0.0
+    payoff = _basket_payoff(legs)
+
+    if payoff is not None and filled_legs < len(legs):
+        # A basket with a missing/unfillable leg is NOT executable as a basket —
+        # reporting the filled legs alone would sell a broken arb as fillable.
+        realizable, gross, fillable = 0.0, 0.0, 0.0
+    elif payoff is None or filled_legs == 0:
+        # Naked leg (or nothing filled): no guaranteed payout to claim. The honest
+        # number is the execution drag on what filled — costs, never invented profit.
+        drag = fees + gas + slippage
+        realizable = round(-(drag / filled_total), 4) if filled_total else 0.0
+        gross = 0.0
+        fillable = filled_total
+    else:
+        units = min(leg_contracts)                 # complete basket units only
+        capital = units * unit_cost
+        profit = units * (payoff - unit_cost) - fees - gas
+        realizable = round(profit / capital, 4) if capital > 0 else 0.0
+        gross = round(payoff - ref_unit_cost, 4)   # per-unit, at top-of-book
+        fillable = capital
 
     return ExecutionEstimate(
         requested_size_usd=round(size_usd, 2),
         fillable_size_usd=round(fillable, 2),
         avg_fill_price=round(avg_fill, 4),
-        gross_edge=gross_edge,
+        gross_edge=gross,
         fees_usd=round(fees, 2),
         gas_usd=round(gas, 2),
         slippage_usd=round(slippage, 2),

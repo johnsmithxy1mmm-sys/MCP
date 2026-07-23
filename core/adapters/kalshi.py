@@ -160,14 +160,24 @@ class KalshiAdapter(VenueAdapter):
         no_levels = book.get("no") or []
         # Kalshi depth sizes are CONTRACT counts; USD notional at a level is
         # contracts * price (what it costs to take that price level).
+        # Defensive per-level parse: one malformed row from the venue must skip,
+        # not throw past the AdapterError boundary and 500 a paid call.
         bids = []
-        for p, s in yes_levels:
-            price = _cents_to_prob(p)
-            bids.append(OrderbookLevel(price=price, size_usd=round(float(s) * price, 2)))
+        for level in yes_levels:
+            try:
+                p, s = level[0], level[1]
+                price = _cents_to_prob(p)
+                bids.append(OrderbookLevel(price=price, size_usd=round(float(s) * price, 2)))
+            except (TypeError, ValueError, IndexError):
+                continue
         asks = []
-        for p, s in no_levels:
-            price = round(1.0 - _cents_to_prob(p), 4)
-            asks.append(OrderbookLevel(price=price, size_usd=round(float(s) * price, 2)))
+        for level in no_levels:
+            try:
+                p, s = level[0], level[1]
+                price = round(1.0 - _cents_to_prob(p), 4)
+                asks.append(OrderbookLevel(price=price, size_usd=round(float(s) * price, 2)))
+            except (TypeError, ValueError, IndexError):
+                continue
         bids.sort(key=lambda l: l.price, reverse=True)
         asks.sort(key=lambda l: l.price)
         return OrderbookSnapshot(

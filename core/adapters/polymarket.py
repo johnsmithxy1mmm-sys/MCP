@@ -155,14 +155,21 @@ class PolymarketAdapter(VenueAdapter):
         if not token_id:
             return None  # unknown market -> no book (never guess the token)
         data = fetch_json(CLOB_URL, "/book", params={"token_id": token_id}, venue="Polymarket")
-        asks = [
-            OrderbookLevel(price=round(_f(l.get("price")), 4), size_usd=round(_f(l.get("size")), 2))
-            for l in (data.get("asks") or [])
-        ][:10]
-        bids = [
-            OrderbookLevel(price=round(_f(l.get("price")), 4), size_usd=round(_f(l.get("size")), 2))
-            for l in (data.get("bids") or [])
-        ][:10]
+
+        def _levels(rows) -> list[OrderbookLevel]:
+            # Defensive: a malformed row (non-dict) must skip, not throw past the
+            # AdapterError boundary and 500 a paid call.
+            out = []
+            for l in rows or []:
+                try:
+                    out.append(OrderbookLevel(price=round(_f(l.get("price")), 4),
+                                              size_usd=round(_f(l.get("size")), 2)))
+                except (TypeError, ValueError, AttributeError):
+                    continue
+            return out[:10]
+
+        asks = _levels(data.get("asks") if isinstance(data, dict) else None)
+        bids = _levels(data.get("bids") if isinstance(data, dict) else None)
         # CLOB returns asks ascending is not guaranteed; sort for a clean top-of-book.
         asks.sort(key=lambda l: l.price)
         bids.sort(key=lambda l: l.price, reverse=True)

@@ -111,3 +111,64 @@ def test_find_mispricing_surfaces_dutch_book_with_risk():
     o = ops[0]
     assert o.kind.value == "dutch_book"
     assert o.annualized_edge is not None and o.holding_days is not None
+
+
+# --- honest execution edge (release audit) -----------------------------------
+def test_naked_leg_edge_is_cost_drag_not_profit():
+    # Regression: a single YES buy used to report ~97% "realizable edge" because
+    # every filled dollar was counted as profit. A naked leg has no guaranteed
+    # payout — its edge is the (negative) execution drag.
+    books = {("kalshi", "m"): _book(Venue.KALSHI, 0.5)}
+    est = algorithms.estimate_realizable_edge(
+        [Leg(venue=Venue.KALSHI, market_id="m", side=Side.YES)],
+        1000, lambda v, mid: books.get((v, mid)))
+    assert est.realizable_edge <= 0
+    assert est.gross_edge == 0.0
+
+
+def test_complementary_basket_edge_matches_spread():
+    # YES at 0.60 ask + NO at (1 - 0.70 bid) = unit cost 0.90 -> ~11% gross on
+    # a guaranteed $1 payout, minus kalshi fees on both legs.
+    from core.models import OrderbookSnapshot, OrderbookLevel
+    from core.models import utcnow
+
+    def book(price):
+        lvl = [OrderbookLevel(price=price, size_usd=100_000)]
+        return OrderbookSnapshot(venue=Venue.KALSHI, market_id="x", as_of=utcnow(),
+                                 yes_asks=lvl, yes_bids=lvl)
+    books = {("kalshi", "a"): book(0.60), ("kalshi", "b"): book(0.70)}
+    est = algorithms.estimate_realizable_edge(
+        [Leg(venue=Venue.KALSHI, market_id="a", side=Side.YES),
+         Leg(venue=Venue.KALSHI, market_id="b", side=Side.NO)],
+        1000, lambda v, mid: books.get((v, mid)))
+    assert est.gross_edge == pytest.approx(1.0 - (0.60 + 0.30), abs=1e-6)
+    assert 0 < est.realizable_edge < est.gross_edge / 0.9  # net of fees, sane scale
+
+
+def test_all_no_basket_uses_n_minus_1_payoff():
+    # Over-round dutch book: N NO legs pay N-1. Sum of YES = 1.10 -> ~10% gross.
+    from core.models import OrderbookSnapshot, OrderbookLevel, utcnow
+
+    def book(price):
+        lvl = [OrderbookLevel(price=price, size_usd=100_000)]
+        return OrderbookSnapshot(venue=Venue.POLYMARKET, market_id="x", as_of=utcnow(),
+                                 yes_asks=lvl, yes_bids=lvl)
+    books = {("polymarket", "a"): book(0.60), ("polymarket", "b"): book(0.50)}
+    est = algorithms.estimate_realizable_edge(
+        [Leg(venue=Venue.POLYMARKET, market_id="a", side=Side.NO),
+         Leg(venue=Venue.POLYMARKET, market_id="b", side=Side.NO)],
+        1000, lambda v, mid: books.get((v, mid)))
+    # unit cost = (1-0.6)+(1-0.5)=0.9; payoff (N-1)=1 -> gross 0.10
+    assert est.gross_edge == pytest.approx(0.10, abs=1e-6)
+    assert est.realizable_edge > 0
+
+
+def test_basket_with_dead_leg_is_not_executable():
+    # Regression: a 2-leg basket whose second book is missing must report 0
+    # fillable/edge — selling the surviving leg as a fillable arb is a lie.
+    books = {("kalshi", "m"): _book(Venue.KALSHI, 0.5)}
+    est = algorithms.estimate_realizable_edge(
+        [Leg(venue=Venue.KALSHI, market_id="m", side=Side.YES),
+         Leg(venue=Venue.KALSHI, market_id="dead", side=Side.NO)],
+        1000, lambda v, mid: books.get((v, mid)))
+    assert est.realizable_edge == 0.0 and est.fillable_size_usd == 0.0
