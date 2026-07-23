@@ -108,6 +108,38 @@ def register(mcp: FastMCP) -> None:
         return {**deps.simulate_scenario(spec), **deps.staleness(deps.now())}
 
     @mcp.resource(
+        "leaderboard://top",
+        description=(
+            "Public PROOF-OF-ALPHA leaderboard: agents ranked by REAL, "
+            "resolution-verified paper P&L from positions they committed via "
+            "estimate_execution(commit=true). Handles are anonymized; the ranking is "
+            "server-signed. Free — an independent notary of agent performance."
+        ),
+    )
+    def leaderboard_resource() -> dict:
+        from .provenance import provenance as _prov
+
+        board = deps.leaderboard()
+        return {**board, "provenance": _prov(board["ranked"]),
+                **deps.staleness(deps.now())}
+
+    @mcp.resource(
+        "portfolio://{client_id}",
+        description=(
+            "YOUR own paper portfolio + leaderboard rank: every position you "
+            "committed via estimate_execution(commit=true), with realized P&L once "
+            "resolved. The client_id must match your caller identity. Free."
+        ),
+    )
+    def portfolio_resource(client_id: str) -> dict:
+        from .tools import _client_id as caller_id
+
+        # A portfolio can reveal an agent's strategy — only the owner may read it.
+        if client_id != caller_id():
+            return {"error": "forbidden", "detail": "client_id does not match caller"}
+        return {**deps.client_portfolio(client_id), **deps.staleness(deps.now())}
+
+    @mcp.resource(
         "house://{venue}/{market_id}",
         description=(
             "The SERVER'S OWN probability for one market (not the raw price): "

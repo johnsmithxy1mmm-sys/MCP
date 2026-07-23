@@ -229,10 +229,10 @@ def register(mcp: FastMCP) -> None:
         description=(
             "Flagship scanner. LIVE opportunities whose REALIZABLE EDGE (net of fees/"
             "gas/slippage) exceeds `min_edge` (0.02=2%). Kinds: cross_venue, bundle, "
-            "dutch_book, entailment (risk-free logic/term-structure violations). Ranked "
-            "by expected_value; each carries survival, velocity, adverse (trap) and "
-            "risk fields. rank=velocity for fastest turnover; bankroll_usd for a "
-            f"rotation_plan; audit for signed evidence. Costs {price_str('find_mispricing')}/call."
+            "dutch_book, entailment. Ranked by expected_value; each carries survival, "
+            "velocity, adverse (trap) and risk fields. rank=velocity for turnover; "
+            "bankroll_usd for a rotation_plan; audit for signed evidence. "
+            f"Costs {price_str('find_mispricing')}/call."
         ),
     )
     def find_mispricing(
@@ -346,8 +346,9 @@ def register(mcp: FastMCP) -> None:
         description=(
             "Before you act: given legs + a dollar size, compute REALIZABLE EDGE after "
             "fees, gas and slippage from live depth — fillable size, avg fill price, net "
-            "edge. Optionally pass `bankroll_usd` + `fair_value` for the Kelly stake and "
-            f"a market-impact curve. Costs {price_str('estimate_execution')} per call."
+            "edge. Optionally pass `bankroll_usd` + `fair_value` for the Kelly stake. Set "
+            "`commit=true` to log this position to your public proof-of-alpha track "
+            f"record (scored at resolution). Costs {price_str('estimate_execution')} per call."
         ),
     )
     def estimate_execution(
@@ -355,16 +356,23 @@ def register(mcp: FastMCP) -> None:
         size_usd: Annotated[float, Field(gt=0, description="Total dollar size you intend to execute.")],
         bankroll_usd: Annotated[float | None, Field(default=None, gt=0, description="Optional: your bankroll, for a Kelly-sized recommendation.")] = None,
         fair_value: Annotated[float | None, Field(default=None, ge=0, le=1, description="Optional: your fair YES probability, e.g. 0.62, for Kelly sizing.")] = None,
+        commit: Annotated[bool, Field(description="Log this as a paper trade on the public agent leaderboard.")] = False,
     ) -> dict:
         est = deps.realizable_edge(legs, size_usd)
         sizing = deps.execution_sizing(legs, size_usd, bankroll_usd, fair_value)
-        return {
+        response = {
             "estimate": est.model_dump(),
             "sizing": sizing,
             "realtime": True,
             **deps.staleness(deps.now()),
             **_cost_note("estimate_execution"),
         }
+        if commit:  # proof-of-alpha: record the position for public grading (K4)
+            trade_id = deps.commit_paper_trade(_client_id(), legs, size_usd)
+            if trade_id is not None:
+                response["paper_trade_id"] = trade_id
+                response["leaderboard"] = "portfolio://" + _client_id()
+        return response
 
     @mcp.tool(
         tags={"paid"},

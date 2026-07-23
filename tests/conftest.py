@@ -23,10 +23,12 @@ _TMP_MATCHLEARN = Path(tempfile.gettempdir()) / "predmarket_test_matchlearn.db"
 _TMP_AUDIT = Path(tempfile.gettempdir()) / "predmarket_test_audit.db"
 _TMP_ACCURACY = Path(tempfile.gettempdir()) / "predmarket_test_accuracy.db"
 _TMP_HOUSE = Path(tempfile.gettempdir()) / "predmarket_test_house.db"
+_TMP_LEADERBOARD = Path(tempfile.gettempdir()) / "predmarket_test_leaderboard.db"
 os.environ.setdefault("MATCHLEARN_DB_URL", f"sqlite:///{_TMP_MATCHLEARN}")
 os.environ.setdefault("AUDIT_DB_URL", f"sqlite:///{_TMP_AUDIT}")
 os.environ.setdefault("ACCURACY_DB_URL", f"sqlite:///{_TMP_ACCURACY}")
 os.environ.setdefault("HOUSE_DB_URL", f"sqlite:///{_TMP_HOUSE}")
+os.environ.setdefault("LEADERBOARD_DB_URL", f"sqlite:///{_TMP_LEADERBOARD}")
 os.environ.setdefault("METERING_DB_URL", f"sqlite:///{_TMP_DB}")
 os.environ.setdefault("RECON_DB_URL", f"sqlite:///{_TMP_RECON}")
 os.environ.setdefault("WATCH_DB_URL", f"sqlite:///{_TMP_WATCH}")
@@ -149,6 +151,15 @@ def clean_metering():
                 pass
     from core import houseforecast
     houseforecast.get_house_forecasts.cache_clear()
+    # Agent leaderboard store (K4): clear paper trades + singleton between tests.
+    if _TMP_LEADERBOARD.exists():
+        with sqlite3.connect(_TMP_LEADERBOARD) as conn:
+            try:
+                conn.execute("DELETE FROM paper_trades")
+            except sqlite3.OperationalError:
+                pass
+    from core import leaderboard
+    leaderboard.get_leaderboard.cache_clear()
     yield
 
 

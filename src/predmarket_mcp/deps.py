@@ -30,6 +30,7 @@ from core.models import (
     OrderbookSnapshot,
     Opportunity,
     PricePoint,
+    Side,
 )
 
 repo = _engine.repo
@@ -425,6 +426,44 @@ def execution_sizing(
     return _sizing(legs, size_usd, repo.get_orderbook, bankroll_usd, fair_value)
 
 
+# --- agent leaderboard / proof-of-alpha (K4) --------------------------------
+def commit_paper_trade(client_id: str, legs: list[Leg], size_usd: float) -> str | None:
+    """Log an intended position as a paper trade for the caller (K4). Captures each
+    leg's yes-equivalent entry price so P&L can be graded at resolution. Best-effort
+    — never breaks the estimate it rides on."""
+    from core.leaderboard import get_leaderboard
+
+    legs_with_entry: list[dict] = []
+    titles: list[str] = []
+    for leg in legs:
+        m = get_market(leg.venue.value, leg.market_id)
+        yp = m.yes_price if m is not None else 0.5
+        entry = round(yp if leg.side == Side.YES else 1.0 - yp, 4)
+        legs_with_entry.append({"venue": leg.venue.value, "market_id": leg.market_id,
+                                "side": leg.side.value, "entry_price": entry})
+        if m is not None:
+            titles.append(m.title[:40])
+    title = (" + ".join(titles))[:120] or None
+    try:
+        return get_leaderboard().record(client_id, size_usd, legs_with_entry, title)
+    except Exception:
+        return None
+
+
+def leaderboard(limit: int = 20) -> dict:
+    """Public agent leaderboard ranked by realized paper P&L (K4)."""
+    from core.leaderboard import get_leaderboard
+
+    return get_leaderboard().leaderboard(limit=limit)
+
+
+def client_portfolio(client_id: str) -> dict:
+    """A caller's own paper portfolio + leaderboard rank (K4)."""
+    from core.leaderboard import get_leaderboard
+
+    return get_leaderboard().client_summary(client_id)
+
+
 def assess_portfolio(
     legs: list[Leg], bankroll_usd: float | None = None,
     fair_values: dict | None = None,
@@ -507,6 +546,13 @@ def resolve_outcomes(outcomes: dict[str, int]) -> int:
         from core.houseforecast import get_house_forecasts
 
         get_house_forecasts().resolve(outcomes)
+    except Exception:
+        pass
+    # Grade agents' committed paper trades for the leaderboard (K4).
+    try:
+        from core.leaderboard import get_leaderboard
+
+        get_leaderboard().resolve(outcomes)
     except Exception:
         pass
     return n

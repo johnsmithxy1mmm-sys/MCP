@@ -21,7 +21,7 @@ trades or holds funds.
 > The shared intelligence (matcher, signals, realizable-edge) lives in
 > `core/algorithms.py` and is used by **both** engines — not duplicated.
 
-## Tool catalog (12 tools, 8 resources, 1 prompt)
+## Tool catalog (12 tools, 10 resources, 1 prompt)
 
 Descriptions are the agent's only documentation, so they're written as copy.
 Every response carries freshness (`as_of` / `data_age_seconds`) and cost
@@ -49,8 +49,9 @@ Prices live in [`pricing.yaml`](./pricing.yaml), never hardcoded.
 
 - **Resources:** `market://{venue}/{market_id}` (snapshot), `house://{venue}/{market_id}`
   (the server's own fused probability), `scenario://scan/{spec}` (what-if stress
-  test), plus `event://`, `conditional://`, `distribution://`, `outcomes://`,
-  `alerts://` — for agents that prefer resources over tool calls.
+  test), `leaderboard://top` (public proof-of-alpha ranking), `portfolio://{client_id}`
+  (your own paper P&L), plus `event://`, `conditional://`, `distribution://`,
+  `outcomes://`, `alerts://` — for agents that prefer resources over tool calls.
 - **Prompt:** `arbitrage_scan_workflow(min_edge)` — guides an agent scan →
   confirm → estimate execution → rank.
 
@@ -234,6 +235,17 @@ the *calling agent's own model* to judge settlement basis risk — the deepest
 rulebook analysis, run at the client's expense; degrades to the heuristic when the
 client can't sample.
 
+**Agent leaderboard — proof-of-alpha as a service** (K4): an agent doesn't just
+find edge here, it can *prove* it. Call `estimate_execution(commit=true)` and the
+position is logged as a paper trade tagged to you; when the markets resolve it's
+P&L-scored by the same model as the track record. The free, server-signed
+`leaderboard://top` resource ranks agents by REAL, resolution-verified return
+(handles anonymized; a single lucky trade stays provisional until
+`LEADERBOARD_MIN_RESOLVED`), and the ownership-checked `portfolio://{client_id}`
+resource shows your own trades, rank and realized P&L. The server becomes an
+independent notary of an agent's performance — a portable, tamper-evident record
+to show a third party, and the network effect the product was missing.
+
 **Native multi-outcome markets** (G): free `outcomes://{event}` resource
 reconstructs an N-outcome event (election, bracketed number) from its binary
 markets — **de-vigged** fair probabilities (margin removed so they sum to 1), the
@@ -278,7 +290,7 @@ semantic matcher runs with no Hugging Face egress at runtime.
 src/predmarket_mcp/
   server.py     FastMCP app; /health, /metrics, /pubkey, /track-record; HTTP app + middleware
   tools.py      the 11 tools (call core/, format for agents — no logic here)
-  resources.py  market:// · house:// · scenario:// · alerts:// · event:// · outcomes:// · distribution:// · conditional:// resources
+  resources.py  market:// · house:// · scenario:// · leaderboard:// · portfolio:// · alerts:// · event:// · outcomes:// · distribution:// · conditional:// resources
   multioutcome.py native N-outcome markets: de-vig + complete-set dutch book (G)
   distribution.py implied distribution from a threshold ladder — vol surface (H1)
   conditional.py  market-implied P(A|B): Gaussian copula + logical overrides (H2)
@@ -316,6 +328,7 @@ core/
   houseforecast.py record + Brier-grade the server's own forecasts vs the market (K1)
   scenario.py   what-if propagation across the market graph + portfolio stress (K2)
   rulesample.py client-sampled (MCP sampling) settlement-basis analysis (K3)
+  leaderboard.py agent proof-of-alpha: paper trades, P&L, public signed ranking (K4)
   watches.py    watch/alert store + background AlertEngine (push computed, pull drained)
   adapters/     base.py · polymarket.py · kalshi.py · manifold.py (fetch + normalize only)
 tests/          40+ offline tests: tools · billing · adapters · storage · matcher · hardening · streaming · push · fairvalue · sizing · analyst · trust · ops · manifold
