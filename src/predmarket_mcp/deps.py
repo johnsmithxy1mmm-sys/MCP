@@ -85,8 +85,19 @@ def conditional_view(event: str, limit: int = 6) -> dict:
         end = now()
         return get_history(venue, market_id, end - timedelta(days=30), end)
 
+    conditionals = pairwise(markets, hist, logical)
+    # Multi-hop Bayesian update (J3): for each target, combine every other
+    # market's P(target | that market) into a posterior given all of them.
+    from core.inference import infer_target
+
+    by_target: dict[str, dict] = {}
+    for c in conditionals:
+        t = by_target.setdefault(c["a"], {"prior": c["p_a"], "evidence": []})
+        t["evidence"].append({"conditional": c["p_a_given_b"], "label": c["b"]})
+    bayesian = [{"market_id": mid, **infer_target(v["prior"], v["evidence"])}
+                for mid, v in by_target.items()]
     return {"event": event, "found": True,
-            "conditionals": pairwise(markets, hist, logical)}
+            "conditionals": conditionals, "bayesian_updates": bayesian}
 
 
 def distribution_view(entity: str) -> dict:
