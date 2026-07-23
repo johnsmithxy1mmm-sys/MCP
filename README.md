@@ -21,7 +21,7 @@ trades or holds funds.
 > The shared intelligence (matcher, signals, realizable-edge) lives in
 > `core/algorithms.py` and is used by **both** engines — not duplicated.
 
-## Tool catalog (12 tools, 6 resources, 1 prompt)
+## Tool catalog (12 tools, 8 resources, 1 prompt)
 
 Descriptions are the agent's only documentation, so they're written as copy.
 Every response carries freshness (`as_of` / `data_age_seconds`) and cost
@@ -47,8 +47,10 @@ Every response carries freshness (`as_of` / `data_age_seconds`) and cost
 
 Prices live in [`pricing.yaml`](./pricing.yaml), never hardcoded.
 
-- **Resource:** `market://{venue}/{market_id}` — market snapshot for agents that
-  prefer resources over tool calls.
+- **Resources:** `market://{venue}/{market_id}` (snapshot), `house://{venue}/{market_id}`
+  (the server's own fused probability), `scenario://scan/{spec}` (what-if stress
+  test), plus `event://`, `conditional://`, `distribution://`, `outcomes://`,
+  `alerts://` — for agents that prefer resources over tool calls.
 - **Prompt:** `arbitrage_scan_workflow(min_edge)` — guides an agent scan →
   confirm → estimate execution → rank.
 
@@ -215,6 +217,23 @@ not just liquidity. The cross-venue matcher **learns from
 resolution ground truth** — `compare_across_venues` reports a history-calibrated
 match confidence, tuned by which past matches actually resolved the same way.
 
+**House probability, scenarios & client-sampled rulebooks** (K): the server
+publishes its OWN forecast, not just the market's. `evaluate_market` and the free
+`house://{venue}/{market_id}` resource return a **`house_probability`** (K1) that
+fuses calibration, options-implied, accuracy-weighted consensus and microstructure
+into one number with a confidence and its `edge_vs_market`; every forecast is
+recorded and, when the market resolves, **Brier-scored** — `track_record`'s
+`house_forecast` block reports `brier_edge` (>0 means the house beats the raw
+market), a claim no competitor can fake. The free `scenario://scan/{spec}` resource
+(K2, e.g. `scenario://scan/pm-btc-150k-2026:yes`) pins markets to a hypothetical
+outcome and propagates the consequences across the entity graph — prior → posterior
+→ shift per related market (logical edges exact, copula edges estimated); pass
+`scenario=` to `assess_portfolio` to **stress a book** under the what-if. And with
+`RULEBOOK_SAMPLING=on`, `compare_across_venues` uses **MCP sampling** (K3) to ask
+the *calling agent's own model* to judge settlement basis risk — the deepest
+rulebook analysis, run at the client's expense; degrades to the heuristic when the
+client can't sample.
+
 **Native multi-outcome markets** (G): free `outcomes://{event}` resource
 reconstructs an N-outcome event (election, bracketed number) from its binary
 markets — **de-vigged** fair probabilities (margin removed so they sum to 1), the
@@ -259,7 +278,7 @@ semantic matcher runs with no Hugging Face egress at runtime.
 src/predmarket_mcp/
   server.py     FastMCP app; /health, /metrics, /pubkey, /track-record; HTTP app + middleware
   tools.py      the 11 tools (call core/, format for agents — no logic here)
-  resources.py  market:// · alerts:// · event:// · outcomes:// · distribution:// · conditional:// resources
+  resources.py  market:// · house:// · scenario:// · alerts:// · event:// · outcomes:// · distribution:// · conditional:// resources
   multioutcome.py native N-outcome markets: de-vig + complete-set dutch book (G)
   distribution.py implied distribution from a threshold ladder — vol surface (H1)
   conditional.py  market-implied P(A|B): Gaussian copula + logical overrides (H2)
@@ -293,6 +312,10 @@ core/
   storage.py    price-history store (SQLite default; asyncpg Timescale/PG via DSN)
   pg.py         asyncpg loop-thread bridge for the sync stores (D2)
   reconciliation.py  flag → resolve → realized-edge / hit-rate / Brier + Merkle root
+  houseview.py  fuse calibration+options+consensus+microstructure -> house probability (K1)
+  houseforecast.py record + Brier-grade the server's own forecasts vs the market (K1)
+  scenario.py   what-if propagation across the market graph + portfolio stress (K2)
+  rulesample.py client-sampled (MCP sampling) settlement-basis analysis (K3)
   watches.py    watch/alert store + background AlertEngine (push computed, pull drained)
   adapters/     base.py · polymarket.py · kalshi.py · manifold.py (fetch + normalize only)
 tests/          40+ offline tests: tools · billing · adapters · storage · matcher · hardening · streaming · push · fairvalue · sizing · analyst · trust · ops · manifold

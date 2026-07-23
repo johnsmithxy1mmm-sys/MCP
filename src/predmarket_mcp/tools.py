@@ -17,7 +17,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
-from fastmcp import FastMCP
+from fastmcp import Context, FastMCP
 
 from . import deps
 from .billing.tiers import load_pricing, price_str
@@ -127,18 +127,20 @@ def register(mcp: FastMCP) -> None:
         tags={"free"},
         meta=_paid_meta("track_record"),
         description=(
-            "Verifiable track record: how flagged opportunities actually performed at "
-            "resolution — hit_rate, predicted-vs-realized edge_slippage, Brier score, "
-            "Merkle commitment. Free — check how much to trust find_mispricing before "
-            "paying for it."
+            "Verifiable track record: how flagged opportunities resolved — hit_rate, "
+            "edge_slippage, Brier, Merkle commitment. Plus `house_forecast`: the "
+            "server's OWN probability vs the market's, Brier-scored (brier_edge>0 = "
+            "house beats the market). Free — how much to trust this server."
         ),
     )
     def track_record() -> dict:
         metrics = deps.track_record_metrics()
+        house = deps.house_forecast_metrics()      # house Brier vs market Brier (K1)
         commitment = deps.track_record_commitment()  # Merkle root over resolved records
-        signed = {**metrics, "commitment": commitment}
+        signed = {**metrics, "house_forecast": house, "commitment": commitment}
         return {
             "track_record": metrics,
+            "house_forecast": house,
             "commitment": commitment,
             "provenance": provenance(signed),
             **deps.staleness(deps.now()),
@@ -150,10 +152,10 @@ def register(mcp: FastMCP) -> None:
         meta=_paid_meta("evaluate_market"),
         description=(
             "Normalized YES/NO prices + implied probability for one market. FREE TIER "
-            "RETURNS A GENUINELY DELAYED PRICE (~60s, from history; `as_of` is the true "
-            "time, `delayed: true`), plus history-calibrated probability, and "
-            "(when available) options-implied and microstructure reads. Realtime prices "
-            "+ depth are paid (estimate_execution / find_mispricing)."
+            "RETURNS A GENUINELY DELAYED PRICE (~60s, from history; `as_of` true, "
+            "`delayed: true`), plus history-calibrated probability and the server's own "
+            "fused `house` probability (with edge_vs_market). Realtime prices + depth "
+            "are paid (estimate_execution / find_mispricing)."
         ),
     )
     def evaluate_market(
@@ -165,6 +167,8 @@ def register(mcp: FastMCP) -> None:
             return {"error": "market_not_found", "venue": venue, "market_id": market_id}
         now = deps.now()
         delay = settings.free_tier_delay_seconds
+        # The server's own fused forecast (K1) — recorded for public Brier grading.
+        house = deps.house_view(venue, market_id)
         # Real-money cross-check vs the options market (opt-in; None when off).
         options = deps.options_divergence(market)
         # Microstructure / informed-flow read from recent history (None if sparse).
@@ -189,6 +193,8 @@ def register(mcp: FastMCP) -> None:
                 },
                 # History-calibrated probability (identity until enough outcomes resolve).
                 "calibration": deps.calibrate_probability(yes, market.category),
+                # The server's own fused probability + its disagreement with the market.
+                **({"house": house} if house else {}),
                 "quality": deps.quote_quality(yes, market.volume_usd, delay),
                 **({"options": options} if options else {}),
                 **({"microstructure": micro} if micro else {}),
@@ -203,6 +209,7 @@ def register(mcp: FastMCP) -> None:
         return {
             "market": _market_dict(market),
             "calibration": deps.calibrate_probability(market.yes_price, market.category),
+            **({"house": house} if house else {}),
             **({"options": options} if options else {}),
             "delayed": False,
             "realtime": False,
@@ -292,8 +299,9 @@ def register(mcp: FastMCP) -> None:
             f"Costs {price_str('compare_across_venues')} per call."
         ),
     )
-    def compare_across_venues(
+    async def compare_across_venues(
         event: Annotated[str, Field(description="Plain-language event, e.g. 'bitcoin above 100k end of 2026'.")],
+        ctx: Context | None = None,
     ) -> dict:
         pair = deps.match_event(event)
         if pair is None:
@@ -301,6 +309,11 @@ def register(mcp: FastMCP) -> None:
         cheaper = pair.a if pair.a.yes_price <= pair.b.yes_price else pair.b
         fair = deps.assess_fair_value([pair.a, pair.b])
         basis = deps.assess_basis(pair.a, pair.b)
+        # K3: refine basis risk with the CLIENT's own model via MCP sampling —
+        # deepest rulebook analysis at the caller's expense. Opt-in + degrades.
+        sampled = await _sample_basis(ctx, pair.a, pair.b)
+        if sampled is not None:
+            basis = sampled
         # Learn from ground truth: record the match, report history-calibrated confidence.
         deps.record_match(pair.a.market_id, pair.b.market_id, pair.confidence)
         match_conf = deps.match_confidence(pair.confidence)
@@ -460,21 +473,28 @@ def register(mcp: FastMCP) -> None:
             "legs: net exposure grouped by event (many legs can be one concentrated "
             "bet), cross-market correlation from history, a correlation-adjusted "
             "portfolio Kelly stake (pass `bankroll_usd` + `fair_values`), and concrete "
-            f"hedges on other venues. Costs {price_str('assess_portfolio')} per call."
+            "hedges on other venues. Pass `scenario` (e.g. 'pm-fed-cut-sep:no') to "
+            f"stress the book under a hypothetical. Costs {price_str('assess_portfolio')} per call."
         ),
     )
     def assess_portfolio(
         legs: Annotated[list[Leg], Field(description="Your current positions. Each: {venue, market_id, side: yes|no}.")],
         bankroll_usd: Annotated[float | None, Field(default=None, gt=0, description="Optional: bankroll, for a Kelly-sized recommendation.")] = None,
         fair_values: Annotated[dict[str, float] | None, Field(default=None, description="Optional: your fair YES probability per market_id, for sizing.")] = None,
+        scenario: Annotated[str | None, Field(default=None, description="Optional what-if: 'market_id:yes|no' comma list to stress the book.")] = None,
     ) -> dict:
         result = deps.assess_portfolio(legs, bankroll_usd, fair_values)
-        return {
+        response = {
             "portfolio": result,
             "realtime": True,
             **deps.staleness(deps.now()),
             **_cost_note("assess_portfolio"),
         }
+        if scenario:  # scenario stress test (K2)
+            impact = deps.scenario_portfolio_impact(scenario, legs)
+            if impact is not None:
+                response["scenario_impact"] = impact
+        return response
 
     @mcp.tool(
         tags={"paid"},
@@ -494,6 +514,30 @@ def register(mcp: FastMCP) -> None:
             **deps.staleness(deps.now()),
             **_cost_note("poll_alerts"),
         }
+
+
+async def _sample_basis(ctx: "Context | None", a, b) -> dict | None:
+    """Ask the client's model to judge settlement basis risk via MCP sampling (K3).
+
+    Off unless RULEBOOK_SAMPLING is set and a sampling-capable client is attached.
+    Any failure (no support, timeout, bad reply) returns None so the caller keeps
+    its heuristic/operator-LLM assessment — the analysis is a bonus, never a
+    dependency.
+    """
+    from core import rulesample
+
+    if ctx is None or not rulesample.sampling_enabled():
+        return None
+    try:
+        result = await ctx.sample(
+            rulesample.build_user_message(a, b),
+            system_prompt=rulesample.SYSTEM_PROMPT,
+            max_tokens=400,
+            temperature=0.0,
+        )
+    except Exception:
+        return None  # client can't sample / declined / errored -> degrade
+    return rulesample.parse(getattr(result, "text", None))
 
 
 def _parse_iso(value: str) -> datetime:

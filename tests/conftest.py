@@ -22,9 +22,11 @@ _TMP_PERSIST = Path(tempfile.gettempdir()) / "predmarket_test_persist.db"
 _TMP_MATCHLEARN = Path(tempfile.gettempdir()) / "predmarket_test_matchlearn.db"
 _TMP_AUDIT = Path(tempfile.gettempdir()) / "predmarket_test_audit.db"
 _TMP_ACCURACY = Path(tempfile.gettempdir()) / "predmarket_test_accuracy.db"
+_TMP_HOUSE = Path(tempfile.gettempdir()) / "predmarket_test_house.db"
 os.environ.setdefault("MATCHLEARN_DB_URL", f"sqlite:///{_TMP_MATCHLEARN}")
 os.environ.setdefault("AUDIT_DB_URL", f"sqlite:///{_TMP_AUDIT}")
 os.environ.setdefault("ACCURACY_DB_URL", f"sqlite:///{_TMP_ACCURACY}")
+os.environ.setdefault("HOUSE_DB_URL", f"sqlite:///{_TMP_HOUSE}")
 os.environ.setdefault("METERING_DB_URL", f"sqlite:///{_TMP_DB}")
 os.environ.setdefault("RECON_DB_URL", f"sqlite:///{_TMP_RECON}")
 os.environ.setdefault("WATCH_DB_URL", f"sqlite:///{_TMP_WATCH}")
@@ -138,6 +140,15 @@ def clean_metering():
                 pass
     from core import metaconsensus
     metaconsensus.get_venue_accuracy.cache_clear()
+    # House-forecast store (K1): clear rows + singleton between tests.
+    if _TMP_HOUSE.exists():
+        with sqlite3.connect(_TMP_HOUSE) as conn:
+            try:
+                conn.execute("DELETE FROM house_forecasts")
+            except sqlite3.OperationalError:
+                pass
+    from core import houseforecast
+    houseforecast.get_house_forecasts.cache_clear()
     yield
 
 

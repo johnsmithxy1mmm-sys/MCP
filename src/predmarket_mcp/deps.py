@@ -100,6 +100,117 @@ def conditional_view(event: str, limit: int = 6) -> dict:
             "conditionals": conditionals, "bayesian_updates": bayesian}
 
 
+def find_market(market_id: str) -> Market | None:
+    """Locate a market by id across venues (best-effort; ids are unique in
+    practice). Backs the scenario engine's pin resolution."""
+    for m in repo.search_markets(market_id, category=None, venue=None):
+        if m.market_id == market_id:
+            return m
+    return None
+
+
+def _scenario_logical(markets: list[Market]) -> dict:
+    """Exact conditional overrides among ``markets`` for the scenario engine:
+    entailment (P(weak|strong)=1) and mutual exclusion (P(x|y)=0), keyed
+    (conditioner_id, target_id) -> P(target | conditioner=yes)."""
+    from core.eventgraph import build_clusters
+
+    logical: dict[tuple[str, str], float] = {}
+    for cluster in build_clusters(markets).values():
+        for rel in cluster.relations:
+            if rel["type"] == "implies":
+                # strong ⇒ weak: P(weak | strong=yes) = 1.
+                logical[(rel["from"], rel["to"])] = 1.0
+    by_group: dict[str, list[str]] = {}
+    for m in markets:
+        if m.event_group:
+            by_group.setdefault(m.event_group, []).append(m.market_id)
+    for ids in by_group.values():
+        for x in ids:
+            for y in ids:
+                if x != y:
+                    logical[(y, x)] = 0.0  # mutually exclusive -> P(x | y=yes) = 0
+    return logical
+
+
+def simulate_scenario(spec: str, limit: int = 10) -> dict:
+    """Propagate a hypothetical scenario across the related market graph (K2).
+
+    ``spec`` pins markets to assumed outcomes, e.g. ``"pm-btc-150k-2026:yes,
+    pm-fed-cut-sep:no"``. Returns each related market's prior/posterior/shift.
+    """
+    from datetime import timedelta
+
+    from core.scenario import propagate
+
+    pins: dict[str, float] = {}
+    unknown: list[str] = []
+    for token in spec.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        mid, _, side = token.partition(":")
+        mid = mid.strip()
+        pins[mid] = 0.0 if side.strip().lower() == "no" else 1.0
+
+    pinned_markets = [m for mid in pins if (m := find_market(mid)) is not None]
+    unknown = [mid for mid in pins if find_market(mid) is None]
+    if not pinned_markets:
+        return {"found": False, "spec": spec, "unknown_markets": unknown,
+                "shifts": []}
+
+    # Related set: markets in the SAME entity cluster (BTC ladder, election field,
+    # …) plus mutually-exclusive event-group peers. Cluster-scoped, not raw title
+    # search, so a stopword can't drag in unrelated markets and manufacture
+    # spurious copula shifts. Correlations within a cluster are the meaningful ones.
+    from core.eventgraph import build_clusters, entity_of
+
+    universe = repo.search_markets("", category=None, venue=None)
+    clusters = build_clusters(universe)
+    related: dict[str, Market] = {m.market_id: m for m in pinned_markets}
+    for pm in pinned_markets:
+        ent = entity_of(pm)
+        if ent and ent in clusters:
+            for m in clusters[ent].markets:
+                related[m.market_id] = m
+        if pm.event_group:
+            for m in universe:
+                if m.event_group == pm.event_group:
+                    related[m.market_id] = m
+    markets = sorted(related.values(), key=lambda m: m.volume_usd or 0, reverse=True)
+    markets = markets[:max(limit + len(pins), 2)]
+
+    def hist(venue, market_id):
+        end = now()
+        return get_history(venue, market_id, end - timedelta(days=30), end)
+
+    logical = _scenario_logical(markets)
+    valid_pins = {mid: v for mid, v in pins.items() if mid in related}
+    shifts = propagate(valid_pins, markets, hist, logical)[:limit]
+    return {
+        "found": True,
+        "spec": spec,
+        "assumptions": [{"market_id": mid, "assumed": "yes" if v >= 0.5 else "no",
+                         "title": related[mid].title} for mid, v in valid_pins.items()],
+        "unknown_markets": unknown,
+        "shifts": shifts,
+        "note": "Posterior shifts from pinning the assumptions; logical edges are "
+                "exact, copula edges are correlation-based estimates.",
+    }
+
+
+def scenario_portfolio_impact(spec: str, legs: list[Leg]) -> dict | None:
+    """Stress a portfolio of legs under a scenario (K2). None if the spec pins
+    nothing recognizable."""
+    from core.scenario import portfolio_impact
+
+    result = simulate_scenario(spec, limit=50)
+    if not result.get("found"):
+        return None
+    return {"scenario": spec, **portfolio_impact(result["shifts"], legs),
+            "assumptions": result["assumptions"]}
+
+
 def distribution_view(entity: str) -> dict:
     """Implied probability distribution for a numeric event from its threshold
     ladder: survival curve, percentiles, tail probs, implied mean (H1)."""
@@ -171,6 +282,46 @@ def calibrate_probability(p: float, category: str | None = None) -> dict:
     from core.calibration import calibrate_probability as _cal
 
     return _cal(p, category)
+
+
+def house_view(venue: str, market_id: str) -> dict | None:
+    """The server's OWN fused forecast for a market (K1): calibration + options +
+    accuracy-weighted consensus + microstructure, blended into one house
+    probability with a confidence and its disagreement with the market. Records
+    the forecast so it can be publicly graded (Brier) at resolution."""
+    from core.houseview import fuse
+
+    market = get_market(venue, market_id)
+    if market is None:
+        return None
+    calibration = calibrate_probability(market.yes_price, market.category)
+    options = options_divergence(market)          # None unless enabled + crypto strike
+    micro = microstructure(venue, market_id)      # None if history is sparse
+    meta = None
+    try:
+        pair = match_event(market.title)
+        if pair is not None and market_id in (pair.a.market_id, pair.b.market_id):
+            meta = meta_consensus([pair.a, pair.b])
+    except Exception:
+        meta = None
+    view = fuse(market.yes_price, calibration=calibration, options=options,
+                meta=meta, micro=micro)
+    try:  # recording must never break the read
+        from core.houseforecast import get_house_forecasts
+
+        get_house_forecasts().record(
+            market_id, venue, market.title, view["house_probability"], market.yes_price)
+    except Exception:
+        pass
+    return view
+
+
+def house_forecast_metrics() -> dict:
+    """Public house-forecast scorecard (K1): house Brier vs the market's Brier over
+    the resolved set — proof the server's number beats the raw market."""
+    from core.houseforecast import get_house_forecasts
+
+    return get_house_forecasts().metrics()
 
 
 def backtest_strategy(
@@ -349,6 +500,13 @@ def resolve_outcomes(outcomes: dict[str, int]) -> int:
         from core.matchlearn import get_matchlearn
 
         get_matchlearn().resolve(outcomes)
+    except Exception:
+        pass
+    # Grade the server's own house forecasts against the same outcomes (K1).
+    try:
+        from core.houseforecast import get_house_forecasts
+
+        get_house_forecasts().resolve(outcomes)
     except Exception:
         pass
     return n

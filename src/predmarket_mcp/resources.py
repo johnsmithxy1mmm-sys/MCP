@@ -95,6 +95,36 @@ def register(mcp: FastMCP) -> None:
         return {**deps.outcome_view(event), **deps.staleness(deps.now())}
 
     @mcp.resource(
+        "scenario://scan/{spec}",
+        description=(
+            "WHAT-IF engine: pin one or more markets to a hypothetical outcome and "
+            "see how every related market moves. `spec` is a comma list of "
+            "`market_id:yes|no`, e.g. scenario://scan/pm-btc-150k-2026:yes. Returns "
+            "each affected market's prior, posterior, and shift, with the drivers "
+            "(logical vs correlation). Free — a prediction-market stress test."
+        ),
+    )
+    def scenario_resource(spec: str) -> dict:
+        return {**deps.simulate_scenario(spec), **deps.staleness(deps.now())}
+
+    @mcp.resource(
+        "house://{venue}/{market_id}",
+        description=(
+            "The SERVER'S OWN probability for one market (not the raw price): "
+            "calibration, options-implied, accuracy-weighted consensus and "
+            "microstructure fused into one house_probability, with a confidence and "
+            "its edge_vs_market. Free. Its accuracy is graded publicly — see "
+            "track_record.house_forecast. e.g. house://kalshi/kx-btc-100k-eoy26"
+        ),
+    )
+    def house_resource(venue: str, market_id: str) -> dict:
+        view = deps.house_view(venue, market_id)
+        if view is None:
+            return {"error": "market_not_found", "venue": venue, "market_id": market_id}
+        return {"venue": venue, "market_id": market_id, **view,
+                **deps.staleness(deps.now())}
+
+    @mcp.resource(
         "market://{venue}/{market_id}",
         description=(
             "Snapshot of one prediction market (normalized YES/NO prices, implied "
