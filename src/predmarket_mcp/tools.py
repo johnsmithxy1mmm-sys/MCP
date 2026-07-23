@@ -220,22 +220,22 @@ def register(mcp: FastMCP) -> None:
         tags={"paid"},
         meta=_paid_meta("find_mispricing"),
         description=(
-            "Flagship scanner. LIVE opportunities whose REALIZABLE EDGE (after fees, "
-            "gas, slippage — never gross) exceeds `min_edge` (0.02 = 2%). Kinds: "
-            "cross_venue, bundle, dutch_book, and entailment (risk-free logic/term-"
-            "structure violations, e.g. P(BTC>150k) priced above P(BTC>100k)). Ranked "
-            "by expected_value (edge x survival_probability); each carries "
-            "holding_days, annualized_edge, resolution_risk, fair_value. Realtime. "
-            f"Costs {price_str('find_mispricing')} per call."
+            "Flagship scanner. LIVE opportunities whose REALIZABLE EDGE (net of fees/"
+            "gas/slippage) exceeds `min_edge` (0.02=2%). Kinds: cross_venue, bundle, "
+            "dutch_book, entailment (risk-free logic/term-structure violations). Ranked "
+            "by expected_value; each carries survival, velocity, adverse (trap) and "
+            "risk fields. rank=velocity for fastest turnover; bankroll_usd for a "
+            f"rotation_plan; audit for signed evidence. Costs {price_str('find_mispricing')}/call."
         ),
     )
     def find_mispricing(
         min_edge: Annotated[float, Field(ge=0, le=1, description="Minimum realizable edge, e.g. 0.02 for 2%.")],
         kind: Annotated[Literal["bundle", "cross_venue", "dutch_book", "entailment"] | None, Field(description="Optional: restrict to one opportunity kind.")] = None,
         category: Annotated[str | None, Field(description="Optional filter: politics, crypto, economics.")] = None,
-        rank: Annotated[Literal["expected_value", "velocity"], Field(description="velocity = fastest capital turnover (EV per locked day) first.")] = "expected_value",
-        bankroll_usd: Annotated[float | None, Field(default=None, gt=0, description="Optional: with horizon_days, returns a capital rotation_plan.")] = None,
+        rank: Annotated[Literal["expected_value", "velocity"], Field(description="velocity = fastest capital turnover first.")] = "expected_value",
+        bankroll_usd: Annotated[float | None, Field(default=None, gt=0, description="With horizon_days, adds a rotation_plan.")] = None,
         horizon_days: Annotated[float, Field(gt=0, le=365, description="Rotation-plan horizon.")] = 30,
+        audit: Annotated[bool, Field(description="Attach a signed audit_bundle_id, verifiable at /audit/{id}.")] = False,
     ) -> dict:
         ops = deps.scan_opportunities(min_edge, kind, category)
         ops = deps.enrich_resolution_risk(ops)  # LLM resolution-risk (if enabled)
@@ -245,8 +245,9 @@ def register(mcp: FastMCP) -> None:
         if rank == "velocity":
             ops = deps.rank_by_velocity(ops)  # fast-turnover strategy
         deps.record_flagged(ops)  # track record: flag now, reconcile at resolution
-        opportunities = [
-            {
+        opportunities = []
+        for o in ops:
+            row = {
                 "kind": o.kind.value,
                 "title": o.title,
                 "category": o.category,
@@ -262,8 +263,9 @@ def register(mcp: FastMCP) -> None:
                 "max_size_usd": o.max_size_usd,
                 "legs": [{"venue": l.venue.value, "market_id": l.market_id, "side": l.side.value} for l in o.legs],
             }
-            for o in ops
-        ]
+            if audit:  # opt-in signed evidence bundle, verifiable at /audit/{id}
+                row["audit_bundle_id"] = deps.build_audit_bundle(o)["bundle_id"]
+            opportunities.append(row)
         response = {
             "opportunities": opportunities,
             "count": len(ops),

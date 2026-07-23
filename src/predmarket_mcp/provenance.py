@@ -100,6 +100,30 @@ def verify(payload, signature: str, key: str) -> bool:
     return hmac.compare_digest(expected, signature or "")
 
 
+def verify_block(payload, block: dict) -> bool:
+    """Verify a provenance ``block`` against ``payload`` (Ed25519 or HMAC).
+
+    Server-side check (has the key). External buyers verify Ed25519 signatures
+    themselves against the public key at ``/pubkey`` — this is the same math.
+    """
+    sig = (block or {}).get("signature")
+    if not sig:
+        return False
+    if block.get("alg") == "Ed25519":
+        key = _ed25519_key()
+        if key is None:
+            return False
+        try:
+            key.public_key().verify(base64.b64decode(sig), _canonical(payload).encode())
+            return True
+        except Exception:
+            return False
+    if block.get("alg") == "HMAC-SHA256":
+        k = os.getenv("SIGNING_KEY")
+        return bool(k) and verify(payload, sig, k)
+    return False
+
+
 def provenance(payload) -> dict:
     """Provenance block to embed alongside a payload, signed with the strongest
     available rail (Ed25519 > HMAC > unsigned)."""

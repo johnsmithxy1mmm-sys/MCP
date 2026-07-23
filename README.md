@@ -185,6 +185,14 @@ entailment violations, term structures); paid `assess_portfolio` tool (net
 exposure, correlation, portfolio Kelly, hedges); `simulate_strategy` now includes
 an out-of-sample walk-forward check.
 
+**Quality & provable evidence** (J): every `find_mispricing` opportunity carries
+an `adverse` block — a trap_score (informed flow against the position +
+historical hit-rate of edges of that kind + quote quality) and a
+`trust_adjusted_edge`. Pass `audit=true` for a signed **audit bundle** per
+opportunity: inputs, prices, book depth and timestamp, Ed25519-signed and
+fetchable at public `GET /audit/{id}` — a buyer independently verifies the edge
+existed, without trusting our word (the deepest, least-copyable trust primitive).
+
 **Capital-velocity strategy** (I): `find_mispricing` prices TIME, not just edge —
 every opportunity carries `velocity` metrics (capital_efficiency = EV per locked
 day, compound_annual_growth under recycling, early-exit liquidity from book

@@ -273,6 +273,23 @@ def assess_portfolio(
 from core.reconciliation import get_reconciliation  # noqa: E402
 
 
+def build_audit_bundle(opp: Opportunity) -> dict:
+    """Assemble + sign + store a verifiable evidence bundle for an opportunity
+    (J6). Returns the signed bundle (incl. bundle_id)."""
+    from core.auditbundle import assemble, get_store, sign
+
+    signed = sign(assemble(opp, get_market, get_orderbook))
+    get_store().save(signed)
+    return signed
+
+
+def get_audit_bundle(bundle_id: str) -> dict | None:
+    """Fetch a stored signed audit bundle by id (backs GET /audit/{id})."""
+    from core.auditbundle import get_store
+
+    return get_store().get(bundle_id)
+
+
 def record_flagged(opps: list[Opportunity]) -> None:
     """Best-effort: record flagged opportunities for later reconciliation."""
     store = get_reconciliation()

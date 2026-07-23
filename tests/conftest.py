@@ -20,7 +20,9 @@ _TMP_WATCH = Path(tempfile.gettempdir()) / "predmarket_test_watch.db"
 _TMP_ANCHOR = Path(tempfile.gettempdir()) / "predmarket_test_anchor.db"
 _TMP_PERSIST = Path(tempfile.gettempdir()) / "predmarket_test_persist.db"
 _TMP_MATCHLEARN = Path(tempfile.gettempdir()) / "predmarket_test_matchlearn.db"
+_TMP_AUDIT = Path(tempfile.gettempdir()) / "predmarket_test_audit.db"
 os.environ.setdefault("MATCHLEARN_DB_URL", f"sqlite:///{_TMP_MATCHLEARN}")
+os.environ.setdefault("AUDIT_DB_URL", f"sqlite:///{_TMP_AUDIT}")
 os.environ.setdefault("METERING_DB_URL", f"sqlite:///{_TMP_DB}")
 os.environ.setdefault("RECON_DB_URL", f"sqlite:///{_TMP_RECON}")
 os.environ.setdefault("WATCH_DB_URL", f"sqlite:///{_TMP_WATCH}")
@@ -116,6 +118,15 @@ def clean_metering():
                 pass
     from core import matchlearn
     matchlearn.get_matchlearn.cache_clear()
+    # Audit-bundle store: clear rows + singleton between tests.
+    if _TMP_AUDIT.exists():
+        with sqlite3.connect(_TMP_AUDIT) as conn:
+            try:
+                conn.execute("DELETE FROM audit_bundles")
+            except sqlite3.OperationalError:
+                pass
+    from core import auditbundle
+    auditbundle.get_store.cache_clear()
     yield
 
 

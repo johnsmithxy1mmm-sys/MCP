@@ -52,6 +52,21 @@ async def health(_request: Request) -> JSONResponse:
     )
 
 
+@mcp.custom_route("/audit/{bundle_id}", methods=["GET"])
+async def audit_bundle(request: Request) -> JSONResponse:
+    """Public signed evidence bundle for a flagged opportunity — inputs, prices,
+    book depth, timestamp + provenance. Independently verifiable against /pubkey."""
+    import anyio
+
+    from . import deps
+
+    bid = request.path_params["bundle_id"]
+    bundle = await anyio.to_thread.run_sync(deps.get_audit_bundle, bid)
+    if bundle is None:
+        return JSONResponse({"error": "not_found", "bundle_id": bid}, status_code=404)
+    return JSONResponse(bundle)
+
+
 @mcp.custom_route("/metrics", methods=["GET"])
 async def metrics(_request: Request):
     """Prometheus-text metrics (request counts, rate-limits, circuit states)."""
