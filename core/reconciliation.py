@@ -156,6 +156,19 @@ class ReconciliationStore:
         with self._lock, self._connect() as conn:
             return conn.execute("SELECT COUNT(*) FROM flagged").fetchone()[0]
 
+    def hit_rate_by_kind(self) -> dict[str, dict]:
+        """Per-kind realized hit-rate over resolved records — the ground truth an
+        adverse-selection score checks an edge against ('do edges like this win?')."""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT kind, realized_edge FROM flagged WHERE resolved = 1 AND "
+                "realized_edge IS NOT NULL").fetchall()
+        agg: dict[str, list[int]] = {}
+        for r in rows:
+            agg.setdefault(r["kind"], []).append(1 if r["realized_edge"] > 0 else 0)
+        return {k: {"hit_rate": round(sum(v) / len(v), 4), "samples": len(v)}
+                for k, v in agg.items()}
+
     def pending_legs(self) -> list[tuple[str, str]]:
         """Distinct (venue, market_id) across all UNRESOLVED flags — the set an
         autonomous resolver must check for settlement."""

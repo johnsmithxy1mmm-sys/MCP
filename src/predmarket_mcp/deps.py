@@ -384,6 +384,30 @@ def rank_by_velocity(opps: list[Opportunity]) -> list[Opportunity]:
     return annotate_early_exit(ranked, get_orderbook)
 
 
+def enrich_adverse(opps: list[Opportunity]) -> list[Opportunity]:
+    """Attach an adverse-selection trap score to each opportunity (J1): informed
+    flow against the position + historical hit-rate by kind + quote quality."""
+    from core.adverse import assess
+
+    hits = get_reconciliation().hit_rate_by_kind()
+    for opp in opps:
+        momentum, informed = None, False
+        flags: list[str] = []
+        if opp.legs:
+            leg = opp.legs[0]
+            micro = microstructure(leg.venue.value, leg.market_id)  # local history read
+            if micro:
+                momentum, informed = micro.get("momentum"), micro.get("informed_flow", False)
+            m = get_market(leg.venue.value, leg.market_id)
+            if m is not None:
+                flags = quote_quality(m.yes_price, m.volume_usd)["flags"]
+        h = hits.get(opp.kind.value, {})
+        opp.adverse = assess(opp, momentum=momentum, informed_flow=informed,
+                             historical_hit=h.get("hit_rate"),
+                             historical_samples=h.get("samples", 0), quality_flags=flags)
+    return opps
+
+
 def rotation_plan(opps: list[Opportunity], bankroll_usd: float,
                   horizon_days: float = 30.0) -> dict:
     """Bankroll rotation plan across short-cycle opportunities (I1)."""

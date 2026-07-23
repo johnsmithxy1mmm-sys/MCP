@@ -241,6 +241,7 @@ def register(mcp: FastMCP) -> None:
         ops = deps.enrich_resolution_risk(ops)  # LLM resolution-risk (if enabled)
         # Rank by expected value (edge x survival), learning opportunity lifespans.
         ops = deps.rank_by_expected_value(ops, observe_full=(kind is None and category is None))
+        ops = deps.enrich_adverse(ops)  # adverse-selection trap score (J1)
         if rank == "velocity":
             ops = deps.rank_by_velocity(ops)  # fast-turnover strategy
         deps.record_flagged(ops)  # track record: flag now, reconcile at resolution
@@ -257,6 +258,7 @@ def register(mcp: FastMCP) -> None:
                 "survival_probability": o.survival_probability,
                 "expected_value": o.expected_value,
                 "velocity": o.velocity,
+                "adverse": o.adverse,
                 "max_size_usd": o.max_size_usd,
                 "legs": [{"venue": l.venue.value, "market_id": l.market_id, "side": l.side.value} for l in o.legs],
             }

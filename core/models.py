@@ -139,6 +139,11 @@ class Opportunity(BaseModel):
         description="Capital-velocity metrics: capital_efficiency (EV per locked "
         "day), compound_annual_growth under recycling, early-exit liquidity.",
     )
+    adverse: dict | None = Field(
+        default=None,
+        description="Adverse-selection assessment: trap_score (0..1, how likely "
+        "you're the one being picked off), factors, and trust_adjusted_edge.",
+    )
 
 
 class Outcome(BaseModel):
