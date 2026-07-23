@@ -370,16 +370,18 @@ def rank_by_expected_value(opps: list[Opportunity], observe_full: bool) -> list[
         except Exception:
             pass
     ranked = store.annotate(opps)
-    # Attach capital-velocity metrics (holding, efficiency, early-exit) — the
-    # fast-turnover strategy reads these; EV ranking stays the default.
-    return annotate_velocity(ranked, get_orderbook)
+    # Attach capital-velocity metrics (holding, efficiency, compound growth).
+    # Book-free here — early-exit liquidity is added only on the velocity path.
+    return annotate_velocity(ranked)
 
 
 def rank_by_velocity(opps: list[Opportunity]) -> list[Opportunity]:
-    """Re-rank by capital velocity — EV per day of locked capital (I1)."""
-    from core.velocity import rank_by_velocity as _rank
+    """Re-rank by capital velocity (EV per locked day) and enrich the shortlist
+    with early-exit liquidity from live books (I1)."""
+    from core.velocity import annotate_early_exit, rank_by_velocity as _rank
 
-    return _rank(opps)
+    ranked = _rank(opps)
+    return annotate_early_exit(ranked, get_orderbook)
 
 
 def rotation_plan(opps: list[Opportunity], bankroll_usd: float,

@@ -24,6 +24,7 @@ opportunities keep re-appearing (flagged in the plan's note) and is capped.
 
 from __future__ import annotations
 
+import math
 import os
 
 from .models import Opportunity, Side
@@ -39,29 +40,54 @@ def _ev(opp: Opportunity) -> float:
     return opp.expected_value if opp.expected_value is not None else opp.realizable_edge
 
 
-def annotate_velocity(opps: list[Opportunity], book_getter=None) -> list[Opportunity]:
-    """Attach the ``velocity`` block to every opportunity."""
+def _compound_growth(edge: float, cycles_per_year: float) -> float:
+    """(1+edge)^cycles - 1, computed in log-space so a short holding + large edge
+    can't OverflowError — the display cap is applied BEFORE exponentiating."""
+    per = 1.0 + max(0.0, edge)
+    if per <= 1.0:
+        return 0.0
+    log_final = cycles_per_year * math.log(per)
+    if log_final >= math.log(_GROWTH_CAP + 1.0):  # would exceed the cap anyway
+        return _GROWTH_CAP
+    return round(math.exp(log_final) - 1.0, 4)
+
+
+def annotate_velocity(opps: list[Opportunity]) -> list[Opportunity]:
+    """Attach the ``velocity`` block (holding, efficiency, compound growth) to
+    every opportunity. Book-free and cheap — safe on the flagship's hot path.
+    Early-exit liquidity (which needs orderbook fetches) is added separately by
+    :func:`annotate_early_exit` only for the velocity-ranked shortlist."""
     for opp in opps:
         known = opp.holding_days is not None
         days = max(0.5, opp.holding_days if known else _default_days())
-        ev = _ev(opp)
-        efficiency = round(ev / days, 6)  # EV per locked-capital day
-        cycles_per_year = 365.0 / days
-        growth = (1.0 + max(0.0, opp.realizable_edge)) ** cycles_per_year - 1.0
-        block = {
+        efficiency = round(_ev(opp) / days, 6)  # EV per locked-capital day
+        opp.velocity = {
             "holding_days": round(days, 2),
             "holding_known": known,
             "capital_efficiency": efficiency,
-            "compound_annual_growth": round(min(growth, _GROWTH_CAP), 4),
+            "compound_annual_growth": _compound_growth(opp.realizable_edge, 365.0 / days),
             "velocity_score": efficiency,
         }
+    return opps
+
+
+def annotate_early_exit(opps: list[Opportunity], book_getter, limit: int = 10) -> list[Opportunity]:
+    """Add early-exit liquidity to the top ``limit`` opportunities only.
+
+    Kept off the default path because it fetches an orderbook per leg — doing it
+    for every opportunity on every scan would add O(opps x legs) book fetches to
+    live calls. Deep unwind-side depth means you can realize convergence without
+    holding to resolution (the fastest turnover there is).
+    """
+    if book_getter is None:
+        return opps
+    for opp in opps[:limit]:
+        if opp.velocity is None:
+            continue
         exit_usd = _exit_liquidity(opp, book_getter)
         if exit_usd is not None:
-            block["early_exit_liquidity_usd"] = exit_usd
-            # Enough depth to unwind the full recommended size without waiting
-            # for resolution — the fastest capital turnover there is.
-            block["early_exit"] = exit_usd >= (opp.max_size_usd or 0.0)
-        opp.velocity = block
+            opp.velocity["early_exit_liquidity_usd"] = exit_usd
+            opp.velocity["early_exit"] = exit_usd >= (opp.max_size_usd or 0.0)
     return opps
 
 

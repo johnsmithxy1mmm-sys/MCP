@@ -40,6 +40,37 @@ def test_growth_is_capped():
     assert o.velocity["compound_annual_growth"] == 100.0  # capped, not astronomic
 
 
+def test_growth_does_not_overflow_on_extreme_edge():
+    # Regression: edge>1 + short holding used to raise OverflowError (crashing
+    # find_mispricing). Now it caps in log-space instead.
+    o = annotate_velocity([_opp("extreme", 1.7, holding_days=0.5)])[0]
+    assert o.velocity["compound_annual_growth"] == 100.0
+
+
+def test_early_exit_is_off_the_default_path():
+    # annotate_velocity alone fetches no books and adds no early-exit fields.
+    o = annotate_velocity([_opp("x", 0.02, holding_days=10)])[0]
+    assert "early_exit" not in o.velocity
+    assert "early_exit_liquidity_usd" not in o.velocity
+
+
+def test_annotate_early_exit_enriches_and_is_bounded():
+    from datetime import datetime, timezone
+    from core.velocity import annotate_early_exit
+    from core.models import OrderbookLevel, OrderbookSnapshot
+
+    def book_getter(venue, market_id):
+        return OrderbookSnapshot(
+            venue=Venue.KALSHI, market_id=market_id, as_of=datetime.now(timezone.utc),
+            yes_bids=[OrderbookLevel(price=0.5, size_usd=5000.0)], yes_asks=[])
+
+    opps = annotate_velocity([_opp(f"o{i}", 0.02, 10, max_size=1000) for i in range(15)])
+    annotate_early_exit(opps, book_getter, limit=3)
+    # Only the top 3 got the (book-dependent) early-exit fields.
+    assert opps[0].velocity["early_exit"] is True   # 5000 depth >= 1000 size
+    assert "early_exit" not in opps[5].velocity
+
+
 # --- ranking ----------------------------------------------------------------
 def test_velocity_rank_prefers_fast_recycling():
     slow_big = _opp("slow_big", 0.06, holding_days=300)
