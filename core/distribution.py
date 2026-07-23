@@ -165,8 +165,11 @@ def fit_lognormal(points: list[tuple[float, float]]) -> dict | None:
         return None
     sigma = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / var
     mu = my - sigma * mx
-    if sigma <= 0:
-        return None  # degenerate / non-monotone ladder
+    if sigma <= 0 or sigma > 50:
+        # Degenerate/non-monotone ladder, or an absurd strike span (garbage
+        # parsed from a title) whose exp(sigma^2) would overflow. Real ladders
+        # fit with sigma well under 5.
+        return None
     return {"model": "lognormal", "mu": round(mu, 6), "sigma": round(sigma, 6),
             "mean": round(math.exp(mu + sigma * sigma / 2), 2),
             "median": round(math.exp(mu), 2),

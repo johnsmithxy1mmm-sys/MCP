@@ -52,6 +52,18 @@ def _compound_growth(edge: float, cycles_per_year: float) -> float:
     return round(math.exp(log_final) - 1.0, 4)
 
 
+def _compound_factor(ev: float, cycles: float) -> float:
+    """(1+ev)^cycles in log-space with the same cap as compound growth, so a
+    short holding + large edge can't OverflowError the rotation plan."""
+    per = 1.0 + max(0.0, ev)
+    if per <= 1.0:
+        return 1.0
+    log_final = cycles * math.log(per)
+    if log_final >= math.log(_GROWTH_CAP + 1.0):
+        return _GROWTH_CAP + 1.0
+    return math.exp(log_final)
+
+
 def annotate_velocity(opps: list[Opportunity]) -> list[Opportunity]:
     """Attach the ``velocity`` block (holding, efficiency, compound growth) to
     every opportunity. Book-free and cheap — safe on the flagship's hot path.
@@ -148,7 +160,7 @@ def rotation_plan(
         if alloc <= 0:
             continue
         cycles = max(1, int(horizon_days // days))
-        factor = (1.0 + ev) ** cycles
+        factor = _compound_factor(ev, cycles)
         allocations.append({
             "title": opp.title,
             "kind": opp.kind.value,

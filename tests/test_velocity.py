@@ -109,6 +109,17 @@ def test_rotation_plan_respects_max_size_and_positions(monkeypatch):
     assert plan["idle_usd"] == 900
 
 
+def test_rotation_plan_does_not_overflow_on_extreme_edge():
+    # Regression: ev=1.7 + 0.5-day holding over a 365-day horizon -> 730 cycles;
+    # (1+ev)**cycles used to raise OverflowError. Now the factor caps in log-space.
+    opps = annotate_velocity([_opp("extreme", 1.7, holding_days=0.5)])
+    plan = rotation_plan(opps, bankroll_usd=1000, horizon_days=365)
+    assert plan["positions"] == 1
+    # Capped at the growth cap (101x), never astronomic/inf.
+    assert plan["allocations"][0]["projected_usd"] <= 1000 * 101.0
+    assert plan["projected_bankroll_usd"] <= 1000 * 101.0
+
+
 def test_rotation_plan_empty_without_candidates():
     plan = rotation_plan([], bankroll_usd=500, horizon_days=30)
     assert plan["positions"] == 0 and plan["projected_bankroll_usd"] == 500

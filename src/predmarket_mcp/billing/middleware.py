@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 from dataclasses import dataclass
 from functools import lru_cache
@@ -44,6 +45,10 @@ from .x402 import (
 )
 
 PAYMENT_HEADER = "x-payment"
+
+# Payment gating buffers the request body to inspect the JSON-RPC calls; cap it
+# so an oversized POST can't balloon memory. Normal MCP payloads are a few KB.
+MAX_BODY_BYTES = int(os.getenv("X402_MAX_BODY_BYTES", str(2 * 1024 * 1024)))
 
 
 def client_fingerprint(headers: dict[str, str]) -> str | None:
@@ -228,6 +233,8 @@ class X402Middleware:
             return await self.app(scope, receive, send)
 
         body, messages = await _buffer_body(receive)
+        if body is None:  # over the size cap — reject before parsing anything
+            return await _send_413(send)
         calls = _paid_tool_calls(body, self.billing)
         if not calls:
             return await self.app(scope, _replay(messages, receive), send)
@@ -244,6 +251,7 @@ class X402Middleware:
 
 
 async def _buffer_body(receive):
+    """Buffer the request body (returns ``(None, messages)`` when over the cap)."""
     body = b""
     messages = []
     more = True
@@ -252,6 +260,8 @@ async def _buffer_body(receive):
         messages.append(message)
         if message["type"] == "http.request":
             body += message.get("body", b"")
+            if len(body) > MAX_BODY_BYTES:
+                return None, messages
             more = message.get("more_body", False)
         else:
             more = False
@@ -296,6 +306,22 @@ def _paid_tool_calls(body: bytes, billing: BillingContext) -> list[tuple[str, di
             args = params.get("arguments") or {}
             calls.append((name, args if isinstance(args, dict) else {}))
     return calls
+
+
+async def _send_413(send):
+    body = json.dumps({"error": "payload_too_large",
+                       "detail": f"request body exceeds {MAX_BODY_BYTES} bytes"}).encode()
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 413,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(body)).encode()),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": body})
 
 
 async def _send_402(send, challenge: dict):

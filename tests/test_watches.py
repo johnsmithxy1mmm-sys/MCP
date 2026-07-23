@@ -58,6 +58,22 @@ def test_alerts_are_per_client(tmp_path):
     assert store.drain("agent-2") == []
 
 
+def test_alert_queue_is_capped_per_client(tmp_path, monkeypatch):
+    # A client that never polls keeps only the newest ALERT_QUEUE_MAX alerts
+    # (mirrors the Redis LTRIM path) — unbounded queues would grow the DB forever.
+    import core.watches as w
+
+    monkeypatch.setattr(w, "ALERT_QUEUE_MAX", 5)
+    store = _store(tmp_path)
+    store.create_watch("agent-1", min_edge=0.0)
+    store.fire([_opp(0.05, title=f"opp-{i}") for i in range(12)])
+    alerts = store.drain("agent-1")
+    assert len(alerts) == 5
+    # Delivered alerts are not clawed back by the cap on later fires.
+    store.fire([_opp(0.05, title=f"late-{i}") for i in range(3)])
+    assert len(store.drain("agent-1")) == 3
+
+
 # --- end-to-end through the tools -------------------------------------------
 @pytest.mark.asyncio
 async def test_watch_then_poll_alerts_tool_flow(client):

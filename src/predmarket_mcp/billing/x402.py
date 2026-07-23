@@ -351,6 +351,7 @@ class NonceStore:
         self._lock = threading.Lock()
         self._path = _sqlite_path_of(db_url)
         self._ttl = int(os.getenv("NONCE_TTL_SECONDS", str(30 * 24 * 3600)))
+        self._last_prune: float | None = None  # SQLite TTL prune throttle
         if redis_client is not None:
             self._redis = redis_client
         else:
@@ -391,12 +392,29 @@ class NonceStore:
         """
         if self._redis is not None:
             return bool(self._redis.set(_NONCE_PREFIX + fingerprint, "1", nx=True, ex=self._ttl))
+        self._maybe_prune()  # Redis expires keys itself; SQLite needs a sweep
         with self._lock, self._connect() as conn:
             cur = conn.execute(
                 "INSERT OR IGNORE INTO used_payments (fingerprint, ts) VALUES (?, ?)",
                 (fingerprint, datetime.now(timezone.utc).isoformat()),
             )
             return cur.rowcount > 0
+
+    def _maybe_prune(self) -> None:
+        """Delete fingerprints older than the TTL (throttled to hourly). A signed
+        payment's EIP-3009 authorization has long expired by then, so dropping
+        the row cannot re-open a replay window."""
+        import time as _t
+
+        now = _t.monotonic()
+        if self._last_prune is not None and now - self._last_prune < 3600:
+            return
+        self._last_prune = now
+        from datetime import timedelta
+
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=self._ttl)).isoformat()
+        with self._lock, self._connect() as conn:
+            conn.execute("DELETE FROM used_payments WHERE ts < ?", (cutoff,))
 
     def count(self) -> int:
         if self._redis is not None:

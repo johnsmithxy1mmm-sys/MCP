@@ -252,3 +252,42 @@ def test_pricing_tiers_match_spec():
     assert pricing.get("evaluate_market").price_usd == 0
     assert pricing.get("find_mispricing").is_paid
     assert pricing.get("find_mispricing").price_usd == 0.05
+
+
+# --- body-size cap (memory-DoS guard) ---------------------------------------
+@pytest.mark.asyncio
+async def test_oversized_body_rejected_with_413(tmp_path, monkeypatch):
+    import predmarket_mcp.billing.middleware as mwmod
+
+    monkeypatch.setattr(mwmod, "MAX_BODY_BYTES", 1024)
+    billing = _paid_billing(tmp_path)
+    mw = X402Middleware(_ok_downstream, billing)
+    status, body = await _run_asgi(mw, b"x" * 2048, [])
+    assert status == 413
+    assert json.loads(body)["error"] == "payload_too_large"
+
+
+@pytest.mark.asyncio
+async def test_normal_body_passes_under_the_cap(tmp_path):
+    billing = _paid_billing(tmp_path)
+    mw = X402Middleware(_ok_downstream, billing)
+    # A free-tool call well under the cap flows through untouched.
+    status, _ = await _run_asgi(mw, _tool_call_body("search_markets", {"query": "fed"}), [])
+    assert status == 200
+
+
+# --- nonce store TTL prune --------------------------------------------------
+def test_nonce_store_prunes_expired_fingerprints(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from predmarket_mcp.billing.x402 import NonceStore
+
+    monkeypatch.setenv("NONCE_TTL_SECONDS", "3600")
+    store = NonceStore(f"sqlite:///{tmp_path / 'n.db'}", redis_client=None)
+    # Seed one expired fingerprint directly, then trigger a prune via mark_used.
+    old_ts = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    with store._connect() as conn:
+        conn.execute("INSERT INTO used_payments (fingerprint, ts) VALUES (?, ?)",
+                     ("stale-fp", old_ts))
+    assert store.mark_used("fresh-fp") is True
+    assert store.is_used("stale-fp") is False  # swept
+    assert store.is_used("fresh-fp") is True   # kept

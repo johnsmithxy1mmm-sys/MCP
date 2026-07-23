@@ -73,7 +73,10 @@ class LiveRepo:
         self._markets = _TTLCache(_MARKET_TTL)
         self._books = _TTLCache(_BOOK_TTL)
         self._history = HistoryStore()
-        self._by_id: dict[tuple[str, str], Market] = {}  # (venue, id) -> Market index
+        # (venue, id) -> Market index. Bounded: markets churn over months of
+        # uptime, so an unbounded index is a slow memory leak.
+        self._by_id: "OrderedDict[tuple[str, str], Market]" = OrderedDict()
+        self._by_id_max = int(os.getenv("LIVE_INDEX_MAX", "50000"))
 
     # -- internal ---------------------------------------------------------
     def _all_markets(self, query: str | None = None) -> list[Market]:
@@ -90,6 +93,9 @@ class LiveRepo:
         for m in out:
             self._history.record_market(m)
             self._by_id[(m.venue.value, m.market_id)] = m
+            self._by_id.move_to_end((m.venue.value, m.market_id))
+        while len(self._by_id) > self._by_id_max:
+            self._by_id.popitem(last=False)  # evict least-recently observed
         self._markets.put(query or "*", out)
         return out
 

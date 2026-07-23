@@ -190,6 +190,16 @@ class WatchStore:
                             "watch_id": w["watch_id"], "client_id": w["client_id"],
                             "ts": ts, "opportunity": payload,
                         })
+            # Cap each client's undelivered queue (mirrors the Redis LTRIM): a
+            # client that never polls keeps only the newest ALERT_QUEUE_MAX.
+            for cid in {a["client_id"] for a in new_alerts}:
+                conn.execute(
+                    "DELETE FROM alerts WHERE client_id = ? AND delivered = 0 "
+                    "AND rowid NOT IN (SELECT rowid FROM alerts "
+                    "  WHERE client_id = ? AND delivered = 0 "
+                    "  ORDER BY ts DESC LIMIT ?)",
+                    (cid, cid, ALERT_QUEUE_MAX),
+                )
         if new_alerts:
             self._push(new_alerts)
         return fired

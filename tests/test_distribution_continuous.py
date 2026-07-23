@@ -66,3 +66,12 @@ async def test_distribution_resource_has_continuous(client):
     c = data["continuous"]
     assert c["model"] == "lognormal"
     assert c["quantiles"]["p10"] < c["quantiles"]["p90"]
+
+
+def test_fit_rejects_absurd_strike_span():
+    # A garbage ladder spanning ~300 orders of magnitude yields a sigma whose
+    # exp(sigma^2) would overflow; the fit must reject it, not crash.
+    from core.distribution import fit_lognormal
+
+    points = [(1e-300, 0.55), (1e300, 0.45)]  # (strike, survival)
+    assert fit_lognormal(points) is None

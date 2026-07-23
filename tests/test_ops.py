@@ -109,3 +109,21 @@ async def test_metrics_endpoint():
         r = await ac.get("/metrics")
         assert r.status_code == 200
         assert "predmarket_" in r.text
+
+
+def test_ip_cap_stops_client_id_rotation(monkeypatch):
+    # Rotating x-client-id mints fresh per-client buckets; the per-IP cap
+    # (rpm x RATE_LIMIT_IP_MULT) still bounds the total from one address.
+    monkeypatch.setenv("RATE_LIMIT_IP_MULT", "2")
+    rl = RateLimiter(rpm=3, burst=3)
+    allowed = 0
+    for i in range(20):
+        if rl.allow(f"rotated-{i}") and rl.allow_ip("10.0.0.9"):
+            allowed += 1
+    assert allowed == 6  # 3 rpm x mult 2, not 20
+
+
+def test_ip_cap_disabled_with_zero_mult(monkeypatch):
+    monkeypatch.setenv("RATE_LIMIT_IP_MULT", "0")
+    rl = RateLimiter(rpm=1, burst=1)
+    assert all(rl.allow_ip("10.0.0.9") for _ in range(50))

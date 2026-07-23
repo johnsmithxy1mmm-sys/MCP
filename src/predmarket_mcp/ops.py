@@ -126,30 +126,47 @@ class RateLimiter:
         if not self.enabled:
             return True
         if self._redis is not None:
-            return self._allow_redis(client_id)
-        return self._allow_local(client_id)
+            return self._allow_redis(client_id, self.rpm)
+        return self._allow_local(client_id, self.rate, self.capacity)
 
-    def _allow_redis(self, client_id: str) -> bool:
-        """Global fixed-window counter: rpm requests per 60s across all instances."""
+    def allow_ip(self, ip: str) -> bool:
+        """Secondary per-IP cap at ``rpm x RATE_LIMIT_IP_MULT`` (default 5x).
+
+        The per-client key comes from spoofable headers, so rotating
+        ``x-client-id`` values would otherwise sidestep the limit entirely. The
+        IP cap bounds total throughput per source address regardless of how many
+        client ids it invents. Set RATE_LIMIT_IP_MULT=0 to disable (e.g. when
+        many legit tenants share one egress IP).
+        """
+        mult = int(os.getenv("RATE_LIMIT_IP_MULT", "5"))
+        if not self.enabled or mult <= 0 or not ip:
+            return True
+        limit = self.rpm * mult
+        if self._redis is not None:
+            return self._allow_redis(f"ip:{ip}", limit)
+        return self._allow_local(f"ip:{ip}", limit / 60.0, float(limit))
+
+    def _allow_redis(self, key_id: str, limit: int) -> bool:
+        """Global fixed-window counter: `limit` requests per 60s across instances."""
         import time as _t
 
         window = int(_t.time() // 60)
-        key = f"rl:{client_id}:{window}"
+        key = f"rl:{key_id}:{window}"
         try:
             count = self._redis.incr(key)
             if count == 1:
                 self._redis.expire(key, 60)
-            return count <= self.rpm
-        except Exception:
-            return self._allow_local(client_id)  # Redis hiccup -> degrade, don't block
+            return count <= limit
+        except Exception:  # Redis hiccup -> degrade, don't block
+            return self._allow_local(key_id, limit / 60.0, float(limit))
 
-    def _allow_local(self, client_id: str) -> bool:
+    def _allow_local(self, key_id: str, rate: float, capacity: float) -> bool:
         with self._lock:
-            bucket = self._buckets.get(client_id)
+            bucket = self._buckets.get(key_id)
             if bucket is None:
-                bucket = TokenBucket(self.rate, self.capacity)
-                self._buckets[client_id] = bucket
-            self._buckets.move_to_end(client_id)
+                bucket = TokenBucket(rate, capacity)
+                self._buckets[key_id] = bucket
+            self._buckets.move_to_end(key_id)
             while len(self._buckets) > self.MAX_BUCKETS:
                 self._buckets.popitem(last=False)
             return bucket.take()
@@ -172,23 +189,26 @@ class RateLimitMiddleware:
         if scope.get("type") != "http" or not self.limiter.enabled:
             return await self.app(scope, receive, send)
         METRICS.inc("http_requests_total")
-        client_id = self._client_id(scope)
-        if not self.limiter.allow(client_id):
+        client_id, ip = self._client_id_and_ip(scope)
+        # Per-client bucket first; then the per-IP cap, which holds even when the
+        # caller rotates spoofable x-client-id values to mint fresh buckets.
+        if not self.limiter.allow(client_id) or not self.limiter.allow_ip(ip):
             METRICS.inc("rate_limited_total")
             await self._send_429(send)
             return
         return await self.app(scope, receive, send)
 
     @staticmethod
-    def _client_id(scope) -> str:
+    def _client_id_and_ip(scope) -> tuple[str, str]:
         headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
         from .billing.middleware import client_fingerprint
 
-        cid = client_fingerprint(headers)
-        if cid:
-            return cid
         client = scope.get("client")
-        return client[0] if client else "anon"
+        peer = client[0] if client else ""
+        # Behind a proxy the peer is the LB; prefer the forwarded client address.
+        ip = headers.get("x-forwarded-for", "").split(",")[0].strip() or peer
+        cid = client_fingerprint(headers)
+        return (cid or ip or "anon"), ip
 
     @staticmethod
     async def _send_429(send):
