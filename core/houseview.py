@@ -38,6 +38,7 @@ def fuse(
     options: dict | None = None,
     meta: dict | None = None,
     micro: dict | None = None,
+    reality: dict | None = None,
 ) -> dict:
     """Fuse the server's signals into one house probability for a market.
 
@@ -45,6 +46,7 @@ def fuse(
     ``options``      -> {options_probability, ...}                      (C7)
     ``meta``         -> {estimate, venues:[{samples,...}], ...}         (J4)
     ``micro``        -> {momentum, informed_flow, ...}                  (C8)
+    ``reality``      -> {reality_probability, ...}                      (K7)
     Any of them may be None/absent; the blend uses whatever is available.
     """
     market_prob = _clamp01(market_prob)
@@ -77,10 +79,17 @@ def fuse(
         components.append({"source": "meta_consensus", "probability": round(mp, 4),
                            "weight": round(meta_w, 4)})
 
+    # 4. Real-world nowcast (K7) — an external anchor (polls / macro / on-chain).
+    #    Strong weight: it's independent of the market entirely.
+    if reality and reality.get("reality_probability") is not None:
+        rp = _clamp01(float(reality["reality_probability"]))
+        components.append({"source": "reality_nowcast", "probability": round(rp, 4),
+                           "weight": 2.0})
+
     total_w = sum(c["weight"] for c in components)
     blended = sum(c["probability"] * c["weight"] for c in components) / total_w
 
-    # 4. Microstructure tilt: informed flow nudges the estimate in its direction,
+    # 5. Microstructure tilt: informed flow nudges the estimate in its direction,
     #    bounded by _MICRO_MAX_TILT so the tape refines but never overrides.
     tilt = 0.0
     if micro and micro.get("informed_flow"):

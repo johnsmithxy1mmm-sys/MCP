@@ -21,7 +21,7 @@ trades or holds funds.
 > The shared intelligence (matcher, signals, realizable-edge) lives in
 > `core/algorithms.py` and is used by **both** engines — not duplicated.
 
-## Tool catalog (12 tools, 10 resources, 1 prompt)
+## Tool catalog (12 tools, 11 resources, 1 prompt)
 
 Descriptions are the agent's only documentation, so they're written as copy.
 Every response carries freshness (`as_of` / `data_age_seconds`) and cost
@@ -48,10 +48,11 @@ Every response carries freshness (`as_of` / `data_age_seconds`) and cost
 Prices live in [`pricing.yaml`](./pricing.yaml), never hardcoded.
 
 - **Resources:** `market://{venue}/{market_id}` (snapshot), `house://{venue}/{market_id}`
-  (the server's own fused probability), `scenario://scan/{spec}` (what-if stress
-  test), `leaderboard://top` (public proof-of-alpha ranking), `portfolio://{client_id}`
-  (your own paper P&L), plus `event://`, `conditional://`, `distribution://`,
-  `outcomes://`, `alerts://` — for agents that prefer resources over tool calls.
+  (the server's own fused probability), `maker://{venue}/{market_id}` (market-maker
+  quote advice), `scenario://scan/{spec}` (what-if stress test), `leaderboard://top`
+  (public proof-of-alpha ranking), `portfolio://{client_id}` (your own paper P&L),
+  plus `event://`, `conditional://`, `distribution://`, `outcomes://`, `alerts://`
+  — for agents that prefer resources over tool calls.
 - **Prompt:** `arbitrage_scan_workflow(min_edge)` — guides an agent scan →
   confirm → estimate execution → rank.
 
@@ -246,6 +247,24 @@ resource shows your own trades, rank and realized P&L. The server becomes an
 independent notary of an agent's performance — a portable, tamper-evident record
 to show a third party, and the network effect the product was missing.
 
+**Market-maker advisor** (K5): the other side of the book. Every other tool serves
+a taker (lift someone's mispricing); the free `maker://{venue}/{market_id}` resource
+serves a maker — where to post a two-sided limit quote to *earn* the spread
+(`recommended_bid`/`ask`, `half_spread`, `skew`) and a `pull_quotes` guard that says
+step aside when the flow looks informed. It prices adverse-selection risk from
+microstructure (C8) + quote quality (F7), widening and skewing quotes against
+informed flow. Intelligence only — it never posts orders.
+
+**Reality feeds — the market vs the world** (K7): every other signal is
+intramarket; K7 adds an EXTERNAL anchor. With `REALITY_ENABLED=on` and a
+`REALITY_NOWCAST_URL` feed (a poll aggregator, a macro nowcast, an internal model),
+`evaluate_market` reports a `reality` block — the market's probability vs the
+real-world nowcast and their divergence ("market says 60%, the data says 45%") —
+and the reality-implied probability feeds the house forecast (K1) as an
+independent, heavily-weighted component. The divergence math is pure/offline; the
+feed is a flag-gated provider (like the Deribit options cross-check) that degrades
+to nothing when unconfigured.
+
 **Native multi-outcome markets** (G): free `outcomes://{event}` resource
 reconstructs an N-outcome event (election, bracketed number) from its binary
 markets — **de-vigged** fair probabilities (margin removed so they sum to 1), the
@@ -290,7 +309,7 @@ semantic matcher runs with no Hugging Face egress at runtime.
 src/predmarket_mcp/
   server.py     FastMCP app; /health, /metrics, /pubkey, /track-record; HTTP app + middleware
   tools.py      the 11 tools (call core/, format for agents — no logic here)
-  resources.py  market:// · house:// · scenario:// · leaderboard:// · portfolio:// · alerts:// · event:// · outcomes:// · distribution:// · conditional:// resources
+  resources.py  market:// · house:// · maker:// · scenario:// · leaderboard:// · portfolio:// · alerts:// · event:// · outcomes:// · distribution:// · conditional:// resources
   multioutcome.py native N-outcome markets: de-vig + complete-set dutch book (G)
   distribution.py implied distribution from a threshold ladder — vol surface (H1)
   conditional.py  market-implied P(A|B): Gaussian copula + logical overrides (H2)
@@ -329,6 +348,8 @@ core/
   scenario.py   what-if propagation across the market graph + portfolio stress (K2)
   rulesample.py client-sampled (MCP sampling) settlement-basis analysis (K3)
   leaderboard.py agent proof-of-alpha: paper trades, P&L, public signed ranking (K4)
+  maker.py      market-maker quote advisor + adverse-selection guard (K5)
+  reality.py    external nowcast anchor + market-vs-world divergence (K7)
   watches.py    watch/alert store + background AlertEngine (push computed, pull drained)
   adapters/     base.py · polymarket.py · kalshi.py · manifold.py (fetch + normalize only)
 tests/          40+ offline tests: tools · billing · adapters · storage · matcher · hardening · streaming · push · fairvalue · sizing · analyst · trust · ops · manifold

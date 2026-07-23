@@ -171,6 +171,8 @@ def register(mcp: FastMCP) -> None:
         house = deps.house_view(venue, market_id)
         # Real-money cross-check vs the options market (opt-in; None when off).
         options = deps.options_divergence(market)
+        # Market vs the real world: nowcast divergence (K7; None unless enabled).
+        reality = deps.reality_divergence(market)
         # Microstructure / informed-flow read from recent history (None if sparse).
         micro = deps.microstructure(venue, market_id)
         # Honest delay: serve a real historical point at least `delay` seconds
@@ -197,6 +199,7 @@ def register(mcp: FastMCP) -> None:
                 **({"house": house} if house else {}),
                 "quality": deps.quote_quality(yes, market.volume_usd, delay),
                 **({"options": options} if options else {}),
+                **({"reality": reality} if reality else {}),
                 **({"microstructure": micro} if micro else {}),
                 "delayed": True,
                 "realtime": False,
@@ -211,6 +214,7 @@ def register(mcp: FastMCP) -> None:
             "calibration": deps.calibrate_probability(market.yes_price, market.category),
             **({"house": house} if house else {}),
             **({"options": options} if options else {}),
+            **({"reality": reality} if reality else {}),
             "delayed": False,
             "realtime": False,
             "note": "No delayed snapshot available yet; showing the latest with an "

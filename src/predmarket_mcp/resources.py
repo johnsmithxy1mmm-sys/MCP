@@ -140,6 +140,24 @@ def register(mcp: FastMCP) -> None:
         return {**deps.client_portfolio(client_id), **deps.staleness(deps.now())}
 
     @mcp.resource(
+        "maker://{venue}/{market_id}",
+        description=(
+            "MARKET-MAKER advisor for one market: where to post a two-sided limit "
+            "quote to earn the spread (recommended_bid/ask, half_spread), how to "
+            "skew it, and a `pull_quotes` guard that says step aside when the flow "
+            "looks informed. Prices adverse-selection risk from microstructure + "
+            "quote quality. Free — intelligence only, never posts orders. "
+            "e.g. maker://kalshi/kx-btc-100k-eoy26"
+        ),
+    )
+    def maker_resource(venue: str, market_id: str) -> dict:
+        adv = deps.maker_advice(venue, market_id)
+        if adv is None:
+            return {"error": "market_not_found", "venue": venue, "market_id": market_id}
+        return {"venue": venue, "market_id": market_id, **adv,
+                **deps.staleness(deps.now())}
+
+    @mcp.resource(
         "house://{venue}/{market_id}",
         description=(
             "The SERVER'S OWN probability for one market (not the raw price): "

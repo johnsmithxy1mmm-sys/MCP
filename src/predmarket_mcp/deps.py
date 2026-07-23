@@ -297,6 +297,7 @@ def house_view(venue: str, market_id: str) -> dict | None:
         return None
     calibration = calibrate_probability(market.yes_price, market.category)
     options = options_divergence(market)          # None unless enabled + crypto strike
+    reality = reality_divergence(market)          # None unless enabled + a feed read (K7)
     micro = microstructure(venue, market_id)      # None if history is sparse
     meta = None
     try:
@@ -306,7 +307,7 @@ def house_view(venue: str, market_id: str) -> dict | None:
     except Exception:
         meta = None
     view = fuse(market.yes_price, calibration=calibration, options=options,
-                meta=meta, micro=micro)
+                meta=meta, micro=micro, reality=reality)
     try:  # recording must never break the read
         from core.houseforecast import get_house_forecasts
 
@@ -379,6 +380,54 @@ def options_divergence(market: Market) -> dict | None:
         return None
     return {**divergence(market.yes_price, implied), "currency": currency,
             "strike": claim.threshold}
+
+
+def reality_divergence(market: Market) -> dict | None:
+    """Market probability vs a real-world nowcast (K7): "market says X, the data
+    says Y". None unless REALITY_ENABLED + a feed URL and the feed has a read."""
+    from core.reality import divergence as _div, get_provider
+
+    provider = get_provider()
+    if provider is None:
+        return None
+    implied = provider.implied_probability(market)
+    if implied is None:
+        return None
+    return _div(market.yes_price, implied)
+
+
+def maker_advice(venue: str, market_id: str) -> dict | None:
+    """Two-sided quote recommendation for a market maker (K5): where to post bid/
+    ask to earn the spread, and when to pull quotes against informed flow. Fair
+    value is the calibrated market probability (no forecast side effects)."""
+    from core.maker import advise
+
+    market = get_market(venue, market_id)
+    if market is None:
+        return None
+    book = get_orderbook(venue, market_id)
+    best_bid = book.top_bid_price if book else None
+    best_ask = book.top_ask_price if book else None
+    micro = microstructure(venue, market_id) or {}
+    fair = calibrate_probability(market.yes_price, market.category)["calibrated_probability"]
+    flags = quote_quality(market.yes_price, market.volume_usd)["flags"]
+    fee = _maker_fee(market.venue)
+    return advise(
+        fair, best_bid=best_bid, best_ask=best_ask,
+        momentum=micro.get("momentum", 0.0), informed_flow=micro.get("informed_flow", False),
+        realized_vol=micro.get("realized_vol", 0.0), quality_flags=flags, fee=fee,
+    )
+
+
+def _maker_fee(venue) -> float:
+    """Per-side maker fee estimate (probability units). Best-effort from the mock
+    fee model; 0 when unknown."""
+    try:
+        from core.mock import _FEE_BPS
+
+        return float(_FEE_BPS.get(venue, 0.0)) * 0.0  # taker-fee model; makers rebate
+    except Exception:
+        return 0.0
 
 
 def scan_opportunities(
