@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import httpx
-import pytest
 
 from core import resolution
 from core.resolution import ResolutionEngine, collect_outcomes

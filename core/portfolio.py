@@ -20,7 +20,7 @@ Pure/offline over injected getters, so it works for mock and live alike.
 from __future__ import annotations
 
 from .eventgraph import entity_of
-from .models import Leg, Side
+from .models import Side
 
 
 def _pearson(xs: list[float], ys: list[float]) -> float | None:

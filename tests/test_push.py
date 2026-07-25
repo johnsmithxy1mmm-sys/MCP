@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from core import notifier
 from core.models import Leg, Opportunity, OpportunityKind, Side, Venue

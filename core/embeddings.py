@@ -164,7 +164,9 @@ def embed_texts(texts: list[str]) -> list[list[float]] | None:
             have[t] = vec
     if missing:
         vectors = embedder.embed(missing)
-        for text, vec in zip(missing, vectors):
+        # strict: an embedder answering with fewer vectors than inputs must be a
+        # loud error here, not a silent drop that KeyErrors at the return below.
+        for text, vec in zip(missing, vectors, strict=True):
             have[text] = vec
             _cache_put(text, vec)
     return [have[t] for t in texts]

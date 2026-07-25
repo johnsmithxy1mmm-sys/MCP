@@ -75,7 +75,6 @@ def test_get_provider_off_by_default(monkeypatch):
 # --- integration: evaluate_market carries options divergence when enabled ----
 @pytest.mark.asyncio
 async def test_evaluate_market_options_divergence(client, monkeypatch):
-    from predmarket_mcp import deps
 
     class FakeProvider:
         def implied_probability(self, currency, strike):

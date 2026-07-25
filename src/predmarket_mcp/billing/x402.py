@@ -150,7 +150,7 @@ class MockFacilitator(Facilitator):
         try:
             value = int(auth.get("value", 0))
         except (TypeError, ValueError):
-            raise PaymentError("invalid authorization value")
+            raise PaymentError("invalid authorization value") from None
         if value < _to_atomic(requirement.price_usd):
             raise PaymentError("insufficient payment amount")
 

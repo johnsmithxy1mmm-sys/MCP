@@ -220,10 +220,30 @@ def test_fee_and_gas_are_env_overridable(monkeypatch):
     assert gas_for(Venue.POLYMARKET) == 0.25
 
 
-def test_mock_and_live_share_one_cost_model():
-    # Regression: the mock used to carry its own stale gas constant (0.35 vs the
-    # shared 0.05), so edges shown offline evaporated on CORE_ENGINE=live.
-    from core.algorithms import gas_for
-    from core import mock
+def test_gas_override_reaches_the_edge_estimate(monkeypatch):
+    # Regression: gas used to be frozen into module-level dicts at import time
+    # (DEFAULT_GAS_USD / mock._GAS_USD), so a runtime GAS_USD_* override never
+    # reached the estimate. Gas must resolve per leg AT CALL TIME.
+    monkeypatch.setenv("GAS_USD_POLYMARKET", "5.00")
+    books = {("polymarket", "m"): _book(Venue.POLYMARKET, 0.5)}
+    est = algorithms.estimate_realizable_edge(
+        [Leg(venue=Venue.POLYMARKET, market_id="m", side=Side.YES)],
+        1000, lambda v, mid: books.get((v, mid)))
+    assert est.gas_usd == pytest.approx(5.00, abs=1e-9)
+    # ...and the mock engine (which passes no override) picks it up too.
+    from core.mock import realizable_edge
 
-    assert mock._GAS_USD == {v: gas_for(v) for v in Venue}
+    est2 = realizable_edge(
+        [Leg(venue=Venue.POLYMARKET, market_id="pm-btc-100k-2026", side=Side.YES)], 1000)
+    assert est2.gas_usd == pytest.approx(5.00, abs=1e-9)
+
+
+def test_explicit_gas_override_dict_still_wins(monkeypatch):
+    # Callers that pass an explicit per-venue mapping keep full control.
+    monkeypatch.setenv("GAS_USD_POLYMARKET", "5.00")
+    books = {("polymarket", "m"): _book(Venue.POLYMARKET, 0.5)}
+    est = algorithms.estimate_realizable_edge(
+        [Leg(venue=Venue.POLYMARKET, market_id="m", side=Side.YES)],
+        1000, lambda v, mid: books.get((v, mid)),
+        gas_usd={Venue.POLYMARKET: 0.10})
+    assert est.gas_usd == pytest.approx(0.10, abs=1e-9)

@@ -12,14 +12,9 @@ from __future__ import annotations
 
 import hashlib
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
-from .algorithms import (
-    estimate_realizable_edge,
-    finalize_opportunities,
-    gas_for,
-    scan_dutch_book,
-)
+from .algorithms import estimate_realizable_edge, finalize_opportunities, scan_dutch_book
 from .entailment import scan_entailment
 from .fairvalue import consensus
 from .models import (
@@ -41,8 +36,8 @@ from .models import (
 # The mock uses the SAME cost model as the live engine (core.algorithms) rather
 # than its own constants: a mock that quotes cheaper costs than production would
 # show edges that evaporate the moment CORE_ENGINE=live, which is exactly the
-# dishonesty this product exists to avoid.
-_GAS_USD = {v: gas_for(v) for v in Venue}
+# dishonesty this product exists to avoid. No gas override is passed anywhere —
+# each leg resolves gas_for() at call time so env overrides always apply.
 # Spread/fee/gas haircut applied to the curated cross-venue fixtures below.
 _COST_HAIRCUT = 0.008
 
@@ -313,7 +308,7 @@ def scan_opportunities(
     out: list[Opportunity] = []
 
     # Cross-venue: any matched pair whose spread net of costs beats min_edge.
-    for label, pm_id, kx_id, conf in _MATCHES:
+    for label, pm_id, kx_id, _conf in _MATCHES:
         a, b = _by_id(pm_id), _by_id(kx_id)
         if not a or not b:
             continue
@@ -383,5 +378,5 @@ def realizable_edge(legs: list[Leg], size_usd: float) -> ExecutionEstimate:
     # TODO: wire to real core.edge via the live engine.
     """
     return estimate_realizable_edge(
-        legs, size_usd, repo.get_orderbook, gas_usd=_GAS_USD
+        legs, size_usd, repo.get_orderbook
     )

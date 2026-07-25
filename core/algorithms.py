@@ -71,8 +71,10 @@ def gas_for(venue: Venue) -> float:
     return _env_float("GAS_USD_DEFAULT", 0.0)
 
 
-# Kept as a mapping for callers that pass an explicit override dict.
-DEFAULT_GAS_USD = {v: gas_for(v) for v in Venue}
+# NOTE: deliberately NOT materialized into a module-level dict — a snapshot
+# taken at import time would freeze the env values for the process lifetime,
+# silently ignoring runtime overrides. Callers either pass an explicit
+# override mapping or let each leg resolve through gas_for() at call time.
 
 
 def venue_fee(venue: Venue, notional_usd: float, price: float,
@@ -138,8 +140,6 @@ def estimate_realizable_edge(
     A single naked leg has no guaranteed payout: its "edge" is the pure execution
     drag (negative), never a fantasy return. Shared by mock and live engines.
     """
-    gas_usd = gas_usd or DEFAULT_GAS_USD
-
     weighted_price = 0.0
     filled_total = 0.0
     fees = 0.0
@@ -177,7 +177,7 @@ def estimate_realizable_edge(
         # Resolve gas at call time (env-overridable) unless the caller passed an
         # explicit per-venue override — an import-time constant would freeze a
         # stale cost for the process lifetime.
-        leg_gas = gas_usd.get(leg.venue, gas_for(leg.venue))
+        leg_gas = gas_usd[leg.venue] if gas_usd and leg.venue in gas_usd else gas_for(leg.venue)
         weighted_price += avg * filled_here
         filled_total += filled_here
         slippage += abs(avg - ref) * filled_here

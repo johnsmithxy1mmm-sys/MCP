@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-import pytest
 
 from core import storage
 from core.pg import AsyncLoop, get_loop, is_postgres_dsn

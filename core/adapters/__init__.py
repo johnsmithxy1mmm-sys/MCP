@@ -6,6 +6,6 @@ from .kalshi import KalshiAdapter
 from .manifold import ManifoldAdapter
 
 __all__ = [
-    "VenueAdapter", "AdapterError",
+    "VenueAdapter", "AdapterError", "AdapterClientError",
     "PolymarketAdapter", "KalshiAdapter", "ManifoldAdapter",
 ]

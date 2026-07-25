@@ -34,7 +34,6 @@ def _seed_hex():
 
 
 def test_provenance_uses_ed25519_when_keyed(monkeypatch):
-    import importlib
 
     from predmarket_mcp import provenance as prov
 

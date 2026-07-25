@@ -13,7 +13,7 @@ the agent gets. Argument names use the vocabulary a junior engineer would use
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 
 from pydantic import Field
 
@@ -23,7 +23,7 @@ from . import deps
 from .billing.tiers import load_pricing, price_str
 from .config import get_settings
 from .provenance import provenance
-from core.models import Leg, Side, Venue
+from core.models import Leg, Venue
 
 
 # --- small formatting helpers ----------------------------------------------

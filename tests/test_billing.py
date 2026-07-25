@@ -6,7 +6,6 @@ import json
 
 import pytest
 
-from predmarket_mcp.billing.metering import LocalBackend
 from predmarket_mcp.billing.middleware import (
     BillingContext,
     X402Middleware,

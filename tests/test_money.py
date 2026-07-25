@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import json
 
 import httpx
 import pytest
@@ -101,7 +100,6 @@ def test_metrics_summary_renders_latency():
 # --- market_id index --------------------------------------------------------
 def test_live_repo_indexes_market_lookups(monkeypatch):
     from core.adapters import base
-    from core.models import Venue
 
     KX = {"markets": [{"ticker": "KX-1", "title": "t", "yes_bid": 60, "yes_ask": 62,
                        "volume": 1000, "status": "open"}]}

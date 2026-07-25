@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 
-from core import entailment
 from core.entailment import parse_claim, scan_entailment
 from core.models import Market, OpportunityKind, Side, Venue
 

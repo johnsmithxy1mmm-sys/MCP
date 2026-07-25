@@ -131,7 +131,6 @@ def test_none_root_is_noop(tmp_path):
 async def test_public_track_record_includes_anchor_when_enabled(monkeypatch):
     import httpx
 
-    from predmarket_mcp import deps
     from predmarket_mcp.server import build_http_app
 
     monkeypatch.setenv("ANCHOR_ENABLED", "on")

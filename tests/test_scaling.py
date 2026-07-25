@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import fnmatch
 
-import pytest
 
 from predmarket_mcp.billing.x402 import NonceStore, payment_fingerprint
 from predmarket_mcp.ops import RateLimiter

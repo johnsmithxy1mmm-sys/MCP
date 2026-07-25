@@ -49,7 +49,7 @@ def test_live_ingest_then_history(tmp_path, monkeypatch):
     monkeypatch.setenv("HISTORY_DB_URL", f"sqlite:///{tmp_path / 'live_hist.db'}")
 
     import httpx
-    from core.adapters import base, kalshi, polymarket
+    from core.adapters import base
 
     gamma = [{
         "id": "1", "conditionId": "0xc", "question": "Will BTC be above 100k in 2026?",

@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from core import calibration
-from core.calibration import Calibrator, _pav, fit_calibrator
+from core.calibration import _pav, fit_calibrator
 
 
 # --- isotonic core ----------------------------------------------------------
