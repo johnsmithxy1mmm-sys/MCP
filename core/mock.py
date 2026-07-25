@@ -14,7 +14,12 @@ import hashlib
 import random
 from datetime import datetime, timedelta, timezone
 
-from .algorithms import estimate_realizable_edge, finalize_opportunities, scan_dutch_book
+from .algorithms import (
+    estimate_realizable_edge,
+    finalize_opportunities,
+    gas_for,
+    scan_dutch_book,
+)
 from .entailment import scan_entailment
 from .fairvalue import consensus
 from .models import (
@@ -32,10 +37,14 @@ from .models import (
     utcnow,
 )
 
-# --- Fee / cost model (mock) ------------------------------------------------
-# Realistic-ish taker fees and gas. Real engine sources these live per venue.
-_FEE_BPS = {Venue.POLYMARKET: 0.0, Venue.KALSHI: 0.07}  # Kalshi ~7% of profit-ish
-_GAS_USD = {Venue.POLYMARKET: 0.35, Venue.KALSHI: 0.0}  # onchain gas vs none
+# --- Fee / cost model -------------------------------------------------------
+# The mock uses the SAME cost model as the live engine (core.algorithms) rather
+# than its own constants: a mock that quotes cheaper costs than production would
+# show edges that evaporate the moment CORE_ENGINE=live, which is exactly the
+# dishonesty this product exists to avoid.
+_GAS_USD = {v: gas_for(v) for v in Venue}
+# Spread/fee/gas haircut applied to the curated cross-venue fixtures below.
+_COST_HAIRCUT = 0.008
 
 
 # --- Seed catalog -----------------------------------------------------------
@@ -312,8 +321,7 @@ def scan_opportunities(
             continue
         gross = abs(a.yes_price - b.yes_price)
         # Net edge after a rough cost haircut from both venues.
-        haircut = _FEE_BPS[a.venue] * 0.0 + 0.008  # spread/fee/gas approximation
-        net = round(gross - haircut, 4)
+        net = round(gross - _COST_HAIRCUT, 4)
         if net < min_edge:
             continue
         cheap, dear = (a, b) if a.yes_price < b.yes_price else (b, a)
@@ -375,5 +383,5 @@ def realizable_edge(legs: list[Leg], size_usd: float) -> ExecutionEstimate:
     # TODO: wire to real core.edge via the live engine.
     """
     return estimate_realizable_edge(
-        legs, size_usd, repo.get_orderbook, fee_bps=_FEE_BPS, gas_usd=_GAS_USD
+        legs, size_usd, repo.get_orderbook, gas_usd=_GAS_USD
     )

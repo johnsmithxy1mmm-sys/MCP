@@ -172,3 +172,58 @@ def test_basket_with_dead_leg_is_not_executable():
          Leg(venue=Venue.KALSHI, market_id="dead", side=Side.NO)],
         1000, lambda v, mid: books.get((v, mid)))
     assert est.realizable_edge == 0.0 and est.fillable_size_usd == 0.0
+
+
+# --- cost model (sourced fee schedules, env-overridable) ---------------------
+def test_kalshi_fee_matches_published_formula():
+    # Published: fee = ceil(rate * C * P * (1-P)); with C = notional/P this is
+    # rate * notional * (1-P). At P=0.5 the cost peaks.
+    from core.algorithms import venue_fee
+
+    fee = venue_fee(Venue.KALSHI, 1000.0, 0.5)
+    assert fee == pytest.approx(0.07 * 1000 * 0.5, abs=0.01)   # ~35
+    # Vanishes at the tails, peaks mid-book — not a flat bps.
+    assert venue_fee(Venue.KALSHI, 1000.0, 0.99) < venue_fee(Venue.KALSHI, 1000.0, 0.5)
+
+
+def test_kalshi_fee_rounds_up_to_the_cent():
+    # The venue rounds each trade UP; understating a real cost is the one error
+    # an "honest realizable edge" product must never make.
+    from core.algorithms import venue_fee
+
+    fee = venue_fee(Venue.KALSHI, 1.0, 0.5)   # raw 0.035 -> must ceil to 0.04
+    assert fee == pytest.approx(0.04, abs=1e-9)
+
+
+def test_maker_pays_no_taker_fee():
+    from core.algorithms import venue_fee
+
+    assert venue_fee(Venue.KALSHI, 1000.0, 0.5, maker=True) == 0.0
+    assert venue_fee(Venue.POLYMARKET, 1000.0, 0.5, maker=True) == 0.0
+
+
+def test_polymarket_has_no_base_trading_fee():
+    from core.algorithms import venue_fee
+
+    assert venue_fee(Venue.POLYMARKET, 1000.0, 0.5) == 0.0
+
+
+def test_fee_and_gas_are_env_overridable(monkeypatch):
+    # Fee schedules change; a stale constant silently corrupts every edge.
+    from core.algorithms import gas_for, venue_fee
+
+    monkeypatch.setenv("KALSHI_FEE_RATE", "0.10")
+    assert venue_fee(Venue.KALSHI, 1000.0, 0.5) == pytest.approx(50.0, abs=0.01)
+    monkeypatch.setenv("POLYMARKET_FEE_RATE", "0.02")
+    assert venue_fee(Venue.POLYMARKET, 1000.0, 0.5) == pytest.approx(20.0, abs=0.01)
+    monkeypatch.setenv("GAS_USD_POLYMARKET", "0.25")
+    assert gas_for(Venue.POLYMARKET) == 0.25
+
+
+def test_mock_and_live_share_one_cost_model():
+    # Regression: the mock used to carry its own stale gas constant (0.35 vs the
+    # shared 0.05), so edges shown offline evaporated on CORE_ENGINE=live.
+    from core.algorithms import gas_for
+    from core import mock
+
+    assert mock._GAS_USD == {v: gas_for(v) for v in Venue}

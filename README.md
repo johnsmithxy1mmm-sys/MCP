@@ -284,6 +284,27 @@ rate limits) and a `postgresql://` `HISTORY_DB_URL` (shared time series). The
 async asyncpg path runs on a dedicated loop thread so the sync stores are
 unchanged. Install the extras: `--extra redis --extra postgres`.
 
+## Preflight: validate the live path before launch
+
+Every automated test runs against **mocks** — the venue adapters normalize a
+response shape assumed from docs. Real APIs differ, and that gap is the single
+biggest launch risk. `deploy/preflight.py` is the check the test suite
+structurally cannot do: it calls the real venues, pushes what comes back through
+the actual adapters and the whole pipeline (normalization → matching → claim
+parsing → scan → execution estimate), and names the link that breaks.
+
+```bash
+docker compose exec server python deploy/preflight.py          # all venues
+docker compose exec server python deploy/preflight.py kalshi   # one venue
+docker compose exec server python deploy/preflight.py --json   # for monitoring
+```
+
+Read-only (writes to no store), exits non-zero when the live path is broken, and
+also audits production config — unsigned provenance, `PAID_ENABLED=true` with no
+real facilitator (accepting payments that never settle), a missing
+`RESOLUTION_ENGINE` (nothing ever resolves, so calibration / house Brier /
+leaderboard stay empty forever). **Run it before serving traffic.**
+
 ## Deploy
 
 ```bash

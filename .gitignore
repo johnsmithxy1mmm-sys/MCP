@@ -13,6 +13,10 @@ metering.db
 # Env / secrets
 .env
 .env.*
+# ...but the TEMPLATE carries no secrets and must ship: the deploy runbook
+# starts with `cp deploy/.env.example deploy/.env`, which fails on a fresh
+# clone if this file is ignored.
+!.env.example
 
 # Test / tooling caches
 .pytest_cache/

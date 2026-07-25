@@ -15,6 +15,7 @@ live engine; the mock engine keeps curated fixtures. The edge math is shared.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from difflib import SequenceMatcher
@@ -35,21 +36,71 @@ from .models import (
 
 BookGetter = Callable[[str, str], "OrderbookSnapshot | None"]
 
-# Default cost model. The live engine can override per venue.
-DEFAULT_GAS_USD = {Venue.POLYMARKET: 0.35, Venue.KALSHI: 0.0}
+# --- cost model -------------------------------------------------------------
+# Every number here is operator-overridable via env, because venue fee schedules
+# change and a stale constant silently corrupts the one number this product
+# sells (realizable edge). Defaults reflect the published schedules; re-check
+# them at launch with `python deploy/preflight.py` and the venue's fee page.
+#
+#   KALSHI_FEE_RATE     taker fee coefficient (default 0.07 per the published
+#                       formula fee = ceil(rate * C * P * (1-P)))
+#   POLYMARKET_FEE_RATE Polymarket charges no base trading fee (default 0.0);
+#                       set it if they introduce one on the markets you trade.
+#   GAS_USD_POLYMARKET  on-chain settlement cost per leg (Polygon; default 0.05 —
+#                       most flow is relayed/gasless, so this is a conservative
+#                       non-zero placeholder rather than the old 0.35 guess)
+#   GAS_USD_KALSHI      0 (custodial venue, no chain write)
 
 
-def venue_fee(venue: Venue, notional_usd: float, price: float) -> float:
-    """Calibrated per-venue trading fee on a fill.
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
 
-    Kalshi charges ~7% * contracts * price * (1 - price) per trade; with
-    contracts ~= notional / price this reduces to 0.07 * notional * (1 - price)
-    — a real, price-dependent cost (peaks at 50c, ~0 near the tails), unlike a
-    flat bps. Polymarket has no trading fee (cost is onchain gas, added
-    separately). # TODO: source live fee schedules per venue.
-    """
+
+def gas_for(venue: Venue) -> float:
+    """Per-leg settlement/gas cost in USD for a venue."""
+    if venue == Venue.POLYMARKET:
+        return _env_float("GAS_USD_POLYMARKET", 0.05)
     if venue == Venue.KALSHI:
-        return round(0.07 * notional_usd * (1.0 - price), 4)
+        return _env_float("GAS_USD_KALSHI", 0.0)
+    return _env_float("GAS_USD_DEFAULT", 0.0)
+
+
+# Kept as a mapping for callers that pass an explicit override dict.
+DEFAULT_GAS_USD = {v: gas_for(v) for v in Venue}
+
+
+def venue_fee(venue: Venue, notional_usd: float, price: float,
+              maker: bool = False) -> float:
+    """Per-venue trading fee on a fill, in USD.
+
+    **Kalshi** publishes ``fee = ceil(rate * C * P * (1-P))`` per trade, charged
+    to the TAKER only (resting maker orders trade free). With ``C ≈ notional /
+    P`` this reduces to ``rate * notional * (1-P)`` — a genuinely price-dependent
+    cost that peaks near 50c and vanishes at the tails, which a flat-bps model
+    gets badly wrong. The published per-trade rounding is UP to the next cent, so
+    we ceil: understating a real cost is the one error this product must not make.
+
+    **Polymarket** charges no base trading fee; its cost is on-chain settlement,
+    accounted separately as gas.
+
+    ``maker=True`` prices a resting quote (the K5 maker advisor's case): no taker
+    fee applies. That is why spread capture there is quoted gross of fees.
+    """
+    if maker:
+        return 0.0  # resting liquidity pays no taker fee on either venue
+    if venue == Venue.KALSHI:
+        rate = _env_float("KALSHI_FEE_RATE", 0.07)
+        raw = rate * max(0.0, notional_usd) * (1.0 - min(1.0, max(0.0, price)))
+        return math.ceil(raw * 100.0) / 100.0  # venue rounds each trade up to a cent
+    if venue == Venue.POLYMARKET:
+        rate = _env_float("POLYMARKET_FEE_RATE", 0.0)
+        return round(rate * max(0.0, notional_usd), 4) if rate else 0.0
     return 0.0
 
 
@@ -123,7 +174,10 @@ def estimate_realizable_edge(
             continue
         avg = cost / filled_here
         leg_fee = venue_fee(leg.venue, filled_here, avg)
-        leg_gas = gas_usd.get(leg.venue, 0.0)
+        # Resolve gas at call time (env-overridable) unless the caller passed an
+        # explicit per-venue override — an import-time constant would freeze a
+        # stale cost for the process lifetime.
+        leg_gas = gas_usd.get(leg.venue, gas_for(leg.venue))
         weighted_price += avg * filled_here
         filled_total += filled_here
         slippage += abs(avg - ref) * filled_here
