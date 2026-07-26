@@ -290,3 +290,74 @@ def test_nonce_store_prunes_expired_fingerprints(tmp_path, monkeypatch):
     assert store.mark_used("fresh-fp") is True
     assert store.is_used("stale-fp") is False  # swept
     assert store.is_used("fresh-fp") is True   # kept
+
+
+# --- INV-001: settle-once под конкурентностью (регрессия аудита) -------------
+def test_concurrent_same_payment_settles_at_most_once(tmp_path):
+    """Два одновременных запроса с ОДНИМ подписанным X-PAYMENT.
+
+    Расчёт необратим (реальный перевод USDC), поэтому инвариант жёсткий: сколько
+    бы потоков ни гонялось, до фасилитатора доходит не больше одного расчёта.
+    До правки оба потока проходили is_used() и оба расчитывались — плательщик
+    списывался дважды за один обслуженный вызов, а /revenue показывал 0
+    расхождения.
+    """
+    import threading
+    from predmarket_mcp.billing.x402 import Facilitator, Receipt, encode_payment_header
+
+    settles = []
+    slock = threading.Lock()
+
+    class CountingFacilitator(Facilitator):
+        def verify_and_settle(self, payment, requirement):
+            with slock:
+                settles.append(requirement.tool_name)
+            return Receipt("r", requirement.tool_name, requirement.price_usd,
+                           "USDC", "base", "payer", "op", "0xtx")
+
+    billing = _paid_billing(tmp_path)
+    billing.facilitator = CountingFacilitator()
+    payment = {"scheme": "exact", "network": "base-sepolia",
+               "payload": {"signature": "0xSIG",
+                           "authorization": {"value": "5000000", "from": "0xA"}}}
+    headers = {"x-payment": encode_payment_header(payment)}
+    calls = [("find_mispricing", {"min_edge": 0.02})]
+
+    ok = []
+    barrier = threading.Barrier(2)
+
+    def worker():
+        barrier.wait()
+        ok.append(billing.check_x402(calls, headers).ok)
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(settles) <= 1, f"платёж расчитан {len(settles)} раз — плательщик списан дважды"
+    assert sum(ok) == 1, "ровно один вызов должен быть обслужен"
+    assert billing.receipts.count() == len(settles)  # книги сходятся с расчётами
+
+
+def test_failed_settlement_does_not_free_the_claim(tmp_path):
+    """Отказ расчёта не должен вновь открывать окно двойного списания."""
+    from predmarket_mcp.billing.x402 import Facilitator, PaymentError, encode_payment_header
+
+    class FailingFacilitator(Facilitator):
+        def verify_and_settle(self, payment, requirement):
+            raise PaymentError("facilitator /settle HTTP 502")
+
+    billing = _paid_billing(tmp_path)
+    billing.facilitator = FailingFacilitator()
+    payment = {"scheme": "exact", "network": "base-sepolia",
+               "payload": {"signature": "0xSIG", "authorization": {"value": "5000000"}}}
+    headers = {"x-payment": encode_payment_header(payment)}
+    calls = [("find_mispricing", {"min_edge": 0.02})]
+
+    first = billing.check_x402(calls, headers)
+    second = billing.check_x402(calls, headers)
+    assert first.ok is False and second.ok is False
+    # Второй отказ — именно из-за занятого отпечатка, а не из-за фасилитатора.
+    assert second.challenge["error_detail"] == "payment_reused"

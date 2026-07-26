@@ -135,13 +135,21 @@ class BillingContext:
         try:
             payment = decode_payment_header(raw)
             fingerprint = payment_fingerprint(payment)
-            # Replay check BEFORE settlement — a reused header must never reach
-            # the facilitator's /settle. mark_used after verify closes the race.
-            if self.nonces.is_used(fingerprint):
-                raise PaymentError("payment_reused")
-            receipt = self.facilitator.verify_and_settle(payment, requirement)
+            # CLAIM the fingerprint atomically BEFORE settling. Settlement moves
+            # real USDC and cannot be undone, so the claim must come first. The
+            # previous order (is_used -> settle -> mark_used) let two concurrent
+            # requests both pass the check and both reach the facilitator,
+            # charging the payer twice for one served call while the books
+            # recorded a single receipt — invisible to /revenue (audit INV-001).
+            #
+            # The claim is deliberately NOT released when settlement fails: a
+            # failed settlement moved no money, so the caller loses nothing by
+            # presenting a freshly signed payment, whereas releasing would
+            # re-open the double-settle window whenever a facilitator error is
+            # ambiguous about whether the transfer actually went through.
             if not self.nonces.mark_used(fingerprint):
                 raise PaymentError("payment_reused")
+            receipt = self.facilitator.verify_and_settle(payment, requirement)
         except PaymentError as exc:
             challenge = requirement.to_challenge()
             challenge["error_detail"] = str(exc)
