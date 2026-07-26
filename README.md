@@ -50,9 +50,9 @@ Prices live in [`pricing.yaml`](./pricing.yaml), never hardcoded.
 - **Resources:** `market://{venue}/{market_id}` (snapshot), `house://{venue}/{market_id}`
   (the server's own fused probability), `maker://{venue}/{market_id}` (market-maker
   quote advice), `scenario://scan/{spec}` (what-if stress test), `leaderboard://top`
-  (public proof-of-alpha ranking), `portfolio://{client_id}` (your own paper P&L),
-  plus `event://`, `conditional://`, `distribution://`, `outcomes://`, `alerts://`
-  — for agents that prefer resources over tool calls.
+  (public proof-of-alpha ranking), `portfolio://me` (your own paper P&L),
+  `alerts://me` (your queued alerts), plus `event://`, `conditional://`,
+  `distribution://`, `outcomes://` — for agents that prefer resources over tools.
 - **Identity:** personal resources are addressed as `me` and resolved from a
   **derived** identity — an OAuth subject, or the payer address of a *verified*
   x402 payment. `x-client-id` is only a namespace hint inside an already-proven
