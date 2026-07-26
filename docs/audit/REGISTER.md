@@ -5,12 +5,12 @@
 
 | ID | Sev | Класс | Файл:строка | Conf | Репро |
 |---|---|---|---|---|---|
-| INV-001 | **Critical** | Гонка / деньги | billing/middleware.py:135 | high | `repro_double_settle.py` |
+| INV-001 | **Critical** | Гонка / деньги | billing/middleware.py:135 | high | **ИСПРАВЛЕНА** |
 | INV-002 | **Critical** | Контроль доступа | resources.py:31,57 · tools.py:69 | high | `repro_idor.py` |
-| INV-004 | **Critical** | DoS через данные площадки | algorithms.py:257 | high | `repro_hostile_input.py` |
+| INV-004 | **Critical** | DoS через данные площадки | algorithms.py:257 | high | **ИСПРАВЛЕНА** |
 | INV-003 | High | Ошибки / деньги | billing/middleware.py:192 | high | `repro_metering_fail.py` |
-| INV-005 | High | Валидация границы | models.py:46 · adapters/polymarket.py:94 | high | `repro_hostile_input.py` |
-| INV-008 | High | Краш мимо границы | adapters/polymarket.py:58 | high | `repro_hostile_input.py` |
+| INV-005 | High | Валидация границы | models.py:46 · adapters/polymarket.py:94 | high | **ИСПРАВЛЕНА** |
+| INV-008 | High | Краш мимо границы | adapters/polymarket.py:58 | high | **ИСПРАВЛЕНА** |
 | INV-009 | Medium | Гонка / лимиты | watches.py:127 | high | `repro_concurrency.py` |
 | INV-010 | Medium | Конфиг / потеря денег | billing/metering.py:62 · x402.py:59 | high | `repro_hostile_input.py` |
 | INV-007 | Medium | Гонка / газ | anchor.py:231 | low | — |
@@ -32,3 +32,22 @@
 Убиты (тесты сработали): занижение комиссии, завышение выплаты dutch-book,
 отключение платного гейта, снятие клэмпа размера сделки, разрешение перезаписи
 оценённого прогноза.
+
+## Статус устранения
+
+**Волна 1 завершена** (4 находки, 444 теста зелёные):
+
+| ID | Коммит | Проверка |
+|---|---|---|
+| INV-001 | claim-before-settle | репро: 2 расчёта → 1; мутант «старый порядок» убит |
+| INV-004 | тотальный разбор заголовков | репро: 10/10 враждебных входов; флагман выжил |
+| INV-005 | диапазон цены в модели | репро: отравленный рынок отброшен, исправный уцелел |
+| INV-008 | `base.normalize_rows` | репро: 0 провалов (было 5) |
+
+**Открыты:** INV-002 (Critical, требует решения по API — см. REPORT §6),
+INV-003, INV-009, INV-010, INV-011, INV-012, INV-006, INV-007, TEST-01.
+
+Примечание: `repro_concurrency.py` по-прежнему показывает `metering.count` —
+это проявление **INV-010** (нераспознанный путь БД молча уходит в cwd), а не
+дефект метеринга: с корректным `sqlite:///` URL 20 параллельных записей дают
+ровно 20 строк.
