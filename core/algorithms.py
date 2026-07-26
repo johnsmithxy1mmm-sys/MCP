@@ -247,14 +247,36 @@ _MONTHS = {
 _NUM_RE = re.compile(r"\$?\s*(\d[\d,]*\.?\d*)\s*([kmb])?", re.IGNORECASE)
 
 
+# Beyond any real prediction-market threshold; larger values are garbage or an
+# attack and must not reach int() (Python caps int<->str conversion length, and
+# float() of a very long digit string yields inf).
+_MAX_CANON = 1e15
+
+
 def _canon_number(digits: str, suffix: str | None) -> str:
-    """'$100k' / '100,000' -> '100000'; '1.5m' -> '1500000'."""
+    """'$100k' / '100,000' -> '100000'; '1.5m' -> '1500000'.
+
+    TOTAL by contract: market titles are untrusted venue text (on some venues
+    anyone can create a market with an arbitrary question), and this runs on
+    every title in the scan path. It must never raise for any input — a single
+    malformed title previously killed find_mispricing for every caller with an
+    OverflowError (audit INV-004). Unconvertible or absurd spans are returned
+    unchanged, which simply makes the title not match a threshold ladder.
+    """
     try:
         value = float(digits.replace(",", ""))
-    except ValueError:
+    except (ValueError, OverflowError):
+        return digits
+    if not math.isfinite(value) or abs(value) > _MAX_CANON:
         return digits
     mult = {"k": 1e3, "m": 1e6, "b": 1e9}.get((suffix or "").lower(), 1.0)
-    return str(int(round(value * mult)))
+    scaled = value * mult
+    if not math.isfinite(scaled) or abs(scaled) > _MAX_CANON:
+        return digits
+    try:
+        return str(int(round(scaled)))
+    except (ValueError, OverflowError):  # belt and braces: never raise upward
+        return digits
 
 
 def _normalize(text: str) -> str:

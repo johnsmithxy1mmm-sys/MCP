@@ -23,6 +23,7 @@ Pure/offline. Reuses the number/date normalization from ``algorithms``.
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 
@@ -65,20 +66,47 @@ def _direction(title: str) -> str | None:
     return None
 
 
+def _usable_threshold(text: str) -> float | None:
+    """Parse a canonicalized numeric span into a usable threshold, or None.
+
+    TOTAL by contract — the input is untrusted venue text. ``_canon_number``
+    returns the span UNCHANGED when it is absurd (see its docstring), so the
+    result may still be a 5000-digit string; converting that back with a bare
+    ``float()`` is what killed the scan (audit INV-004).
+    """
+    try:
+        value = float(text)
+    except (ValueError, OverflowError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _is_year(digits: str, raw: str, suffix: str | None) -> bool:
+    """Bare 4-digit year (a deadline, not a threshold).
+
+    The length guard is load-bearing: ``int()`` on a very long digit string
+    raises in Python 3.11+ (4300-digit conversion limit), so the length must be
+    checked BEFORE the conversion.
+    """
+    return (not suffix and digits.isdigit() and len(digits) == 4
+            and "." not in raw and 2020 <= int(digits) <= 2049)
+
+
 def _threshold(title: str) -> float | None:
     """Extract the comparison level, preferring an explicit $-amount and never
     mistaking a 4-digit year for the threshold."""
     m = _MONEY.search(title)
     if m:
-        return float(_canon_number(m.group(1), m.group(2)))
+        return _usable_threshold(_canon_number(m.group(1), m.group(2)))
     best: float | None = None
     for m in _NUMBER.finditer(title):
         raw, suffix = m.group(1), m.group(2)
         digits = raw.replace(",", "")
-        # Skip bare 4-digit years (they're deadlines, not thresholds).
-        if not suffix and digits.isdigit() and 2020 <= int(digits) <= 2049 and "." not in raw:
+        if _is_year(digits, raw, suffix):
             continue
-        value = float(_canon_number(raw, suffix))
+        value = _usable_threshold(_canon_number(raw, suffix))
+        if value is None:
+            continue  # unparseable/absurd span — ignore it, don't fail the title
         if best is None or value > best:
             best = value
     return best
