@@ -86,7 +86,7 @@ check("persistence.observe", "одна возможность = одна зап�
 
 # --- 7. Метеринг: ровно одна запись на вызов ---
 from predmarket_mcp.billing.metering import LocalBackend, UsageRecord
-mb = LocalBackend(f"{tmp}/m.db")
+mb = LocalBackend(f"sqlite:///{tmp}/m.db")   # сырой путь теперь корректно отвергается (INV-010)
 run(20, lambda i: mb.record(UsageRecord("find_mispricing",0.05,"USDC","ok",1.0,"c","x402",{})))
 check("metering.count", "20 параллельных записей = 20 строк", mb.count()==20, f"строк {mb.count()}")
 
