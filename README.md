@@ -249,7 +249,7 @@ position is logged as a paper trade tagged to you; when the markets resolve it's
 P&L-scored by the same model as the track record. The free, server-signed
 `leaderboard://top` resource ranks agents by REAL, resolution-verified return
 (handles anonymized; a single lucky trade stays provisional until
-`LEADERBOARD_MIN_RESOLVED`), and the ownership-checked `portfolio://{client_id}`
+`LEADERBOARD_MIN_RESOLVED`), and the caller-scoped `portfolio://me`
 resource shows your own trades, rank and realized P&L. The server becomes an
 independent notary of an agent's performance — a portable, tamper-evident record
 to show a third party, and the network effect the product was missing.
