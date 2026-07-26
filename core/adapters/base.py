@@ -35,6 +35,32 @@ def _matches_query(query: str | None, market: "Market") -> bool:
     return any(tok in hay for tok in query.lower().split())
 
 
+def normalize_rows(rows, normalizer, query: str | None = None) -> list["Market"]:
+    """Normalize venue rows into Markets, skipping anything unusable.
+
+    The single defensive boundary for venue payloads. A venue response is
+    UNTRUSTED input: the shape is documented, not guaranteed. Previously a
+    ``None`` inside the array, a wrong top-level type, or a price outside [0,1]
+    either crashed past the AdapterError boundary (500 on a paid call) or
+    produced a poisoned Market (audit INV-005 / INV-008). Here one bad row costs
+    exactly that row.
+    """
+    if not isinstance(rows, list):
+        return []
+    out: list[Market] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            market = normalizer(row)
+        except Exception:  # noqa: BLE001 - venue payloads are arbitrary
+            continue      # malformed row / failed model validation -> skip it
+        if market is None or not _matches_query(query, market):
+            continue
+        out.append(market)
+    return out
+
+
 def make_client(base_url: str, timeout: float | None = None) -> httpx.Client:
     """HTTP client honoring env config.
 

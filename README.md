@@ -50,9 +50,16 @@ Prices live in [`pricing.yaml`](./pricing.yaml), never hardcoded.
 - **Resources:** `market://{venue}/{market_id}` (snapshot), `house://{venue}/{market_id}`
   (the server's own fused probability), `maker://{venue}/{market_id}` (market-maker
   quote advice), `scenario://scan/{spec}` (what-if stress test), `leaderboard://top`
-  (public proof-of-alpha ranking), `portfolio://{client_id}` (your own paper P&L),
-  plus `event://`, `conditional://`, `distribution://`, `outcomes://`, `alerts://`
-  — for agents that prefer resources over tool calls.
+  (public proof-of-alpha ranking), `portfolio://me` (your own paper P&L),
+  `alerts://me` (your queued alerts), plus `event://`, `conditional://`,
+  `distribution://`, `outcomes://` — for agents that prefer resources over tools.
+- **Identity:** personal resources are addressed as `me` and resolved from a
+  **derived** identity — an OAuth subject, or the payer address of a *verified*
+  x402 payment. `x-client-id` is only a namespace hint inside an already-proven
+  identity; it can never select a principal. There is deliberately no URI that
+  names another caller, so cross-tenant reads are impossible by construction
+  rather than by check. Set `REQUIRE_PROVEN_IDENTITY=on` to refuse personal
+  resources to unauthenticated callers entirely.
 - **Prompt:** `arbitrage_scan_workflow(min_edge)` — guides an agent scan →
   confirm → estimate execution → rank.
 
@@ -242,7 +249,7 @@ position is logged as a paper trade tagged to you; when the markets resolve it's
 P&L-scored by the same model as the track record. The free, server-signed
 `leaderboard://top` resource ranks agents by REAL, resolution-verified return
 (handles anonymized; a single lucky trade stays provisional until
-`LEADERBOARD_MIN_RESOLVED`), and the ownership-checked `portfolio://{client_id}`
+`LEADERBOARD_MIN_RESOLVED`), and the caller-scoped `portfolio://me`
 resource shows your own trades, rank and realized P&L. The server becomes an
 independent notary of an agent's performance — a portable, tamper-evident record
 to show a third party, and the network effect the product was missing.
@@ -330,7 +337,8 @@ semantic matcher runs with no Hugging Face egress at runtime.
 src/predmarket_mcp/
   server.py     FastMCP app; /health, /metrics, /pubkey, /track-record; HTTP app + middleware
   tools.py      the 11 tools (call core/, format for agents — no logic here)
-  resources.py  market:// · house:// · maker:// · scenario:// · leaderboard:// · portfolio:// · alerts:// · event:// · outcomes:// · distribution:// · conditional:// resources
+  resources.py  market:// · house:// · maker:// · scenario:// · leaderboard:// · portfolio://me · alerts://me · event:// · outcomes:// · distribution:// · conditional:// resources
+  identity.py   caller identity DERIVED from OAuth / verified x402 payer, never from a header
   multioutcome.py native N-outcome markets: de-vig + complete-set dutch book (G)
   distribution.py implied distribution from a threshold ladder — vol surface (H1)
   conditional.py  market-implied P(A|B): Gaussian copula + logical overrides (H2)

@@ -156,9 +156,25 @@ async def test_commit_off_by_default(client):
 
 
 @pytest.mark.asyncio
-async def test_portfolio_resource_rejects_other_clients(client):
-    pf = json.loads((await client.read_resource("portfolio://someone-else"))[0].text)
-    assert pf["error"] == "forbidden"
+async def test_portfolio_of_another_principal_is_not_addressable(client):
+    """audit INV-002: a portfolio reveals an agent's whole strategy.
+
+    Previously `portfolio://<victim>` passed its ownership check whenever the
+    caller also set `x-client-id: <victim>` — both sides of the comparison were
+    attacker-controlled. Now no URI names another principal at all.
+    """
+    from core.models import Leg, Side, Venue
+    from predmarket_mcp import deps
+
+    deps.commit_paper_trade(
+        "victim", [Leg(venue=Venue.KALSHI, market_id="kx-btc-100k-eoy26", side=Side.YES)], 5000)
+
+    with pytest.raises(Exception):
+        await client.read_resource("portfolio://victim")
+
+    own = json.loads((await client.read_resource("portfolio://me"))[0].text)
+    assert own["trades"] == []                     # the victim's position is not visible
+    assert own["identity_source"] == "ephemeral"
 
 
 @pytest.mark.asyncio

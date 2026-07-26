@@ -212,12 +212,21 @@ def estimate_realizable_edge(
         capital = units * unit_cost
         profit = units * (payoff - unit_cost) - fees - gas
         realizable = round(profit / capital, 4) if capital > 0 else 0.0
-        gross = round(payoff - ref_unit_cost, 4)   # per-unit, at top-of-book
+        # Gross is expressed in the SAME unit as realizable — return on deployed
+        # capital, measured at top-of-book before costs. Reporting it as an
+        # absolute per-unit difference put two incomparable quantities side by
+        # side in one response, and an agent comparing them (the obvious thing to
+        # do) was misled whenever unit cost strayed from 1 (audit INV-006).
+        # Their difference is now exactly the execution drag.
+        gross = round((payoff - ref_unit_cost) / ref_unit_cost, 4) if ref_unit_cost > 0 else 0.0
         fillable = capital
 
     return ExecutionEstimate(
         requested_size_usd=round(size_usd, 2),
-        fillable_size_usd=round(fillable, 2),
+        # Round DOWN: rounding to the nearest cent could report a fillable size
+        # slightly ABOVE the requested one, breaking the invariant an agent
+        # would naturally assert and over-stating executable size (INV-012).
+        fillable_size_usd=math.floor(fillable * 100.0) / 100.0,
         avg_fill_price=round(avg_fill, 4),
         gross_edge=gross,
         fees_usd=round(fees, 2),
@@ -247,14 +256,36 @@ _MONTHS = {
 _NUM_RE = re.compile(r"\$?\s*(\d[\d,]*\.?\d*)\s*([kmb])?", re.IGNORECASE)
 
 
+# Beyond any real prediction-market threshold; larger values are garbage or an
+# attack and must not reach int() (Python caps int<->str conversion length, and
+# float() of a very long digit string yields inf).
+_MAX_CANON = 1e15
+
+
 def _canon_number(digits: str, suffix: str | None) -> str:
-    """'$100k' / '100,000' -> '100000'; '1.5m' -> '1500000'."""
+    """'$100k' / '100,000' -> '100000'; '1.5m' -> '1500000'.
+
+    TOTAL by contract: market titles are untrusted venue text (on some venues
+    anyone can create a market with an arbitrary question), and this runs on
+    every title in the scan path. It must never raise for any input — a single
+    malformed title previously killed find_mispricing for every caller with an
+    OverflowError (audit INV-004). Unconvertible or absurd spans are returned
+    unchanged, which simply makes the title not match a threshold ladder.
+    """
     try:
         value = float(digits.replace(",", ""))
-    except ValueError:
+    except (ValueError, OverflowError):
+        return digits
+    if not math.isfinite(value) or abs(value) > _MAX_CANON:
         return digits
     mult = {"k": 1e3, "m": 1e6, "b": 1e9}.get((suffix or "").lower(), 1.0)
-    return str(int(round(value * mult)))
+    scaled = value * mult
+    if not math.isfinite(scaled) or abs(scaled) > _MAX_CANON:
+        return digits
+    try:
+        return str(int(round(scaled)))
+    except (ValueError, OverflowError):  # belt and braces: never raise upward
+        return digits
 
 
 def _normalize(text: str) -> str:

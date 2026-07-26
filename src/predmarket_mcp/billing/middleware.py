@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass
@@ -43,6 +44,8 @@ from .x402 import (
     decode_payment_header,
     payment_fingerprint,
 )
+
+_log = logging.getLogger("predmarket.billing")
 
 PAYMENT_HEADER = "x-payment"
 
@@ -135,19 +138,28 @@ class BillingContext:
         try:
             payment = decode_payment_header(raw)
             fingerprint = payment_fingerprint(payment)
-            # Replay check BEFORE settlement — a reused header must never reach
-            # the facilitator's /settle. mark_used after verify closes the race.
-            if self.nonces.is_used(fingerprint):
-                raise PaymentError("payment_reused")
-            receipt = self.facilitator.verify_and_settle(payment, requirement)
+            # CLAIM the fingerprint atomically BEFORE settling. Settlement moves
+            # real USDC and cannot be undone, so the claim must come first. The
+            # previous order (is_used -> settle -> mark_used) let two concurrent
+            # requests both pass the check and both reach the facilitator,
+            # charging the payer twice for one served call while the books
+            # recorded a single receipt — invisible to /revenue (audit INV-001).
+            #
+            # The claim is deliberately NOT released when settlement fails: a
+            # failed settlement moved no money, so the caller loses nothing by
+            # presenting a freshly signed payment, whereas releasing would
+            # re-open the double-settle window whenever a facilitator error is
+            # ambiguous about whether the transfer actually went through.
             if not self.nonces.mark_used(fingerprint):
                 raise PaymentError("payment_reused")
+            receipt = self.facilitator.verify_and_settle(payment, requirement)
         except PaymentError as exc:
             challenge = requirement.to_challenge()
             challenge["error_detail"] = str(exc)
             return PaymentDecision(ok=False, challenge=challenge)
         self.receipts.save(receipt)
-        return PaymentDecision(ok=True, challenge=None, receipt_id=receipt.receipt_id)
+        return PaymentDecision(ok=True, challenge=None, receipt_id=receipt.receipt_id,
+                               payer=receipt.payer)
 
 
 @dataclass
@@ -155,6 +167,10 @@ class PaymentDecision:
     ok: bool
     challenge: dict | None
     receipt_id: str | None = None
+    # Payer address from the VERIFIED payment. This is a proven identity (the
+    # facilitator checked the signature), so the identity layer can key
+    # ownership on it — "whoever paid owns it" (audit INV-002).
+    payer: str | None = None
 
 
 @lru_cache(maxsize=1)
@@ -213,8 +229,27 @@ class MeteringMiddleware(Middleware):
                 paid_via=paid_via,
                 params=params_meta,
             )
-            # SQLite write off the event loop.
-            await anyio.to_thread.run_sync(self.billing.metering.record, usage)
+            # SQLite write off the event loop — and it MUST NOT decide the fate
+            # of the call. Raising here (disk full, DB locked) escaped the
+            # `finally`, cancelled a successful `return result` and replaced any
+            # real tool exception with a storage error. Under the paid gate the
+            # payment has already settled by this point, so the caller would
+            # have paid, the tool would have run, and they would still get an
+            # error with no usage record (audit INV-003).
+            #
+            # The write is best effort; the FAILURE is not silent — it bumps a
+            # counter that surfaces on /metrics so lost billing data is alarmable.
+            try:
+                await anyio.to_thread.run_sync(self.billing.metering.record, usage)
+            except Exception:
+                try:
+                    from ..ops import METRICS
+
+                    METRICS.inc("metering_write_failures_total")
+                except Exception:
+                    pass
+                _log.exception(
+                    "metering write failed for %s (call outcome preserved)", tool_name)
 
 
 # --- raw ASGI middleware: real HTTP 402 enforcement -------------------------
@@ -247,6 +282,11 @@ class X402Middleware:
         )
         if not decision.ok:
             return await _send_402(send, decision.challenge)
+        # Publish the proven payer for the rest of this request: the tool layer
+        # uses it as an identity that the caller cannot forge.
+        from ..identity import set_verified_payer
+
+        set_verified_payer(decision.payer)
         return await self.app(scope, _replay(messages, receive), send)
 
 

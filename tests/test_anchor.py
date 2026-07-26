@@ -153,3 +153,36 @@ async def test_public_track_record_includes_anchor_when_enabled(monkeypatch):
         body = r.json()
         assert "onchain_anchor" in body
         assert body["onchain_anchor"]["tx_hash"]
+
+
+def test_concurrent_anchor_submits_once(tmp_path, monkeypatch):
+    """INV-007: read-decide-submit-save охватывает НЕОБРАТИМУЮ запись в чейн.
+    Два параллельных /track-record могли оба пройти проверку интервала и
+    сжечь газ дважды на одном корне."""
+    import threading
+    from core.anchor import AnchorStore, ChainAnchor
+
+    submits = []
+    slock = threading.Lock()
+
+    class CountingAnchor(ChainAnchor):
+        def submit(self, root):
+            with slock:
+                submits.append(root)
+            return {"tx_hash": "0x" + root[:8], "network": "base", "block": 1}
+
+    store = AnchorStore(f"sqlite:///{tmp_path / 'a.db'}")
+    anchor = CountingAnchor()
+    barrier = threading.Barrier(8)
+
+    def worker():
+        barrier.wait()
+        store.maybe_anchor("deadbeef" * 8, 10, anchor)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(submits) == 1, f"газ сожжён {len(submits)} раз на одном корне"
+    assert store.count() == 1

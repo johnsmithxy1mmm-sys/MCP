@@ -94,15 +94,15 @@ def test_rate_limiter_bucket_map_is_bounded(monkeypatch):
     assert len(rl._buckets) <= 5
 
 
-# --- alerts:// resource: only the owner may peek -----------------------------
+# --- alerts:// is addressable only as "me" (audit INV-002) --------------------
 @pytest.mark.asyncio
-async def test_alerts_resource_enforces_identity(client):
+async def test_alerts_resource_is_scoped_to_the_caller(client):
     import json
 
     from core.watches import get_watches
     from core.models import Leg, Opportunity, OpportunityKind, Side, Venue
 
-    # Queue an alert for a foreign client id.
+    # Queue an alert belonging to somebody else.
     store = get_watches()
     store.create_watch("someone-else", 0.01)
     store.fire([Opportunity(
@@ -110,12 +110,17 @@ async def test_alerts_resource_enforces_identity(client):
         realizable_edge=0.5, max_size_usd=10.0,
         legs=[Leg(venue=Venue.KALSHI, market_id="m", side=Side.YES)],
     )])
-    # In-memory client resolves to "anon-local" — foreign ids are refused...
-    foreign = await client.read_resource("alerts://someone-else")
-    assert json.loads(foreign[0].text)["error"] == "forbidden"
-    # ...while your own id works.
-    own = await client.read_resource("alerts://anon-local")
-    assert "error" not in json.loads(own[0].text)
+
+    # There is no URI that names another principal: the old ownership "check"
+    # compared two caller-controlled values and was vacuous (audit INV-002).
+    with pytest.raises(Exception):
+        await client.read_resource("alerts://someone-else")
+
+    # Your own alerts resolve from a DERIVED identity and never include theirs.
+    own = json.loads((await client.read_resource("alerts://me"))[0].text)
+    assert "error" not in own
+    assert own["count"] == 0                       # the foreign alert is not visible
+    assert own["identity_proven"] is False         # in-process caller is ephemeral
 
 
 # --- history prune runs on the first write -----------------------------------

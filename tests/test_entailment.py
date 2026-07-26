@@ -100,3 +100,47 @@ async def test_find_mispricing_entailment_kind_filter(client):
         "find_mispricing", {"min_edge": 0.0, "kind": "entailment"}
     )).data
     assert all(o["kind"] == "entailment" for o in r["opportunities"])
+
+
+# --- INV-004: враждебный заголовок рынка не роняет разбор (регрессия аудита) --
+@pytest.mark.parametrize("title", [
+    "Will BTC close above $" + "9" * 5000 + " in 2026?",   # переполнение float -> inf
+    "$" + "1," * 3000 + "0",                                # длинная группировка разрядов
+    "above 1e400",                                          # явная бесконечность
+    "above " + "9" * 4400,                                  # предел int<->str в Python
+    "above 100000000000000000000000000000k",                # запредельный порог
+])
+def test_hostile_title_never_raises(title):
+    """Заголовки приходят от площадок; на части из них вопрос рынка задаёт кто
+    угодно. До правки такой заголовок валил find_mispricing для ВСЕХ вызывающих
+    (OverflowError в _canon_number). Разбор обязан быть тотальным."""
+    from core.entailment import parse_claim
+    from core.models import Market, Venue
+
+    m = Market(venue=Venue.KALSHI, market_id="m", title=title,
+               yes_price=0.5, no_price=0.5)
+    claim = parse_claim(m)          # не должно бросать
+    if claim is not None:
+        import math
+        assert math.isfinite(claim.threshold)
+
+
+def test_hostile_title_does_not_break_the_scan(monkeypatch):
+    """Один отравленный рынок не должен ронять весь платный скан."""
+    from core import mock
+    from core.models import Market, Venue
+
+    poison = Market(venue=Venue.POLYMARKET, market_id="pm-poison",
+                    title="Will BTC close above $" + "9" * 5000 + " in 2026?",
+                    category="crypto", yes_price=0.5, no_price=0.5, volume_usd=10_000)
+    monkeypatch.setattr(mock, "_MARKETS", [*mock._MARKETS, poison])
+    opps = mock.scan_opportunities(0.0)      # не должно бросать
+    assert isinstance(opps, list)
+
+
+def test_hostile_title_does_not_break_the_matcher():
+    """Тот же вход проходит и через матчер (_normalize -> _canon_number)."""
+    from core.algorithms import title_similarity
+
+    evil = "above $" + "9" * 5000
+    assert 0.0 <= title_similarity(evil, "Bitcoin above $100k") <= 1.0

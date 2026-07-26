@@ -97,3 +97,17 @@ async def test_outcomes_resource(client):
     assert "fair_probabilities" in mom and "overround" in mom
     # The mock's dem+rep sums to 0.97 (< 1) and is NOT marked complete -> no false arb.
     assert mom["dutch_book"] is None
+
+
+def test_devig_sums_to_one_for_tiny_probabilities():
+    """INV-011: де-виг делил на ОКРУГЛЁННУЮ сумму, из-за чего доли уходили от 1
+    на ~0.2% при малых вероятностях — рушилось единственное свойство,
+    определяющее де-виггирование."""
+    from core.models import MultiOutcomeMarket, Outcome, Venue
+
+    for ps in ([0.015625, 0.015625], [0.001, 0.002, 0.003], [0.33, 0.33, 0.33]):
+        m = MultiOutcomeMarket(event="e", outcomes=[
+            Outcome(name=f"o{i}", venue=Venue.KALSHI, market_id=f"m{i}", yes_price=p)
+            for i, p in enumerate(ps)])
+        total = sum(o["fair_probability"] for o in m.normalized)
+        assert abs(total - 1.0) < 1e-3, f"{ps} -> {total}"

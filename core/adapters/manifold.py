@@ -20,7 +20,7 @@ import os
 from datetime import datetime, timezone
 
 from ..models import Market, OrderbookLevel, OrderbookSnapshot, Venue
-from .base import VenueAdapter, _matches_query, fetch_json
+from .base import VenueAdapter, fetch_json, normalize_rows
 
 MANIFOLD_URL = "https://api.manifold.markets"
 
@@ -42,13 +42,7 @@ class ManifoldAdapter(VenueAdapter):
     # -- markets ----------------------------------------------------------
     def fetch_markets(self, query: str | None = None, limit: int = 50) -> list[Market]:
         rows = fetch_json(self.base_url, "/v0/markets", params={"limit": limit}, venue="Manifold")
-        markets: list[Market] = []
-        for row in rows if isinstance(rows, list) else []:
-            m = self._normalize_market(row)
-            if m is None or not _matches_query(query, m):
-                continue
-            markets.append(m)
-        return markets
+        return normalize_rows(rows, self._normalize_market, query)
 
     def _normalize_market(self, row: dict) -> Market | None:
         if row.get("outcomeType") not in (None, "BINARY"):
