@@ -212,12 +212,21 @@ def estimate_realizable_edge(
         capital = units * unit_cost
         profit = units * (payoff - unit_cost) - fees - gas
         realizable = round(profit / capital, 4) if capital > 0 else 0.0
-        gross = round(payoff - ref_unit_cost, 4)   # per-unit, at top-of-book
+        # Gross is expressed in the SAME unit as realizable — return on deployed
+        # capital, measured at top-of-book before costs. Reporting it as an
+        # absolute per-unit difference put two incomparable quantities side by
+        # side in one response, and an agent comparing them (the obvious thing to
+        # do) was misled whenever unit cost strayed from 1 (audit INV-006).
+        # Their difference is now exactly the execution drag.
+        gross = round((payoff - ref_unit_cost) / ref_unit_cost, 4) if ref_unit_cost > 0 else 0.0
         fillable = capital
 
     return ExecutionEstimate(
         requested_size_usd=round(size_usd, 2),
-        fillable_size_usd=round(fillable, 2),
+        # Round DOWN: rounding to the nearest cent could report a fillable size
+        # slightly ABOVE the requested one, breaking the invariant an agent
+        # would naturally assert and over-stating executable size (INV-012).
+        fillable_size_usd=math.floor(fillable * 100.0) / 100.0,
         avg_fill_price=round(avg_fill, 4),
         gross_edge=gross,
         fees_usd=round(fees, 2),

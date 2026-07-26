@@ -141,8 +141,10 @@ def test_complementary_basket_edge_matches_spread():
         [Leg(venue=Venue.KALSHI, market_id="a", side=Side.YES),
          Leg(venue=Venue.KALSHI, market_id="b", side=Side.NO)],
         1000, lambda v, mid: books.get((v, mid)))
-    assert est.gross_edge == pytest.approx(1.0 - (0.60 + 0.30), abs=1e-6)
-    assert 0 < est.realizable_edge < est.gross_edge / 0.9  # net of fees, sane scale
+    # Gross is a RETURN on capital, in the same unit as realizable: unit cost
+    # 0.90 buys a guaranteed 1.00 -> 0.10/0.90 = 11.1%.
+    assert est.gross_edge == pytest.approx((1.0 - 0.90) / 0.90, abs=1e-4)
+    assert 0 < est.realizable_edge < est.gross_edge      # costs eat into it
 
 
 def test_all_no_basket_uses_n_minus_1_payoff():
@@ -158,8 +160,8 @@ def test_all_no_basket_uses_n_minus_1_payoff():
         [Leg(venue=Venue.POLYMARKET, market_id="a", side=Side.NO),
          Leg(venue=Venue.POLYMARKET, market_id="b", side=Side.NO)],
         1000, lambda v, mid: books.get((v, mid)))
-    # unit cost = (1-0.6)+(1-0.5)=0.9; payoff (N-1)=1 -> gross 0.10
-    assert est.gross_edge == pytest.approx(0.10, abs=1e-6)
+    # unit cost = (1-0.6)+(1-0.5)=0.9; payoff (N-1)=1 -> 0.10/0.90 = 11.1%
+    assert est.gross_edge == pytest.approx((1.0 - 0.90) / 0.90, abs=1e-4)
     assert est.realizable_edge > 0
 
 
@@ -247,3 +249,64 @@ def test_explicit_gas_override_dict_still_wins(monkeypatch):
         1000, lambda v, mid: books.get((v, mid)),
         gas_usd={Venue.POLYMARKET: 0.10})
     assert est.gas_usd == pytest.approx(0.10, abs=1e-9)
+
+
+def test_fillable_never_exceeds_requested():
+    """INV-012: округление до ближайшего цента могло отдать fillable ВЫШЕ
+    запрошенного, завышая исполнимый размер."""
+    from core.models import OrderbookLevel, OrderbookSnapshot, utcnow
+
+    for size in (1.046875, 0.005, 999.999, 1234.567):
+        lvl = [OrderbookLevel(price=0.5, size_usd=1e9)]
+        bk = OrderbookSnapshot(venue=Venue.KALSHI, market_id="m", as_of=utcnow(),
+                               yes_asks=lvl, yes_bids=lvl)
+        est = algorithms.estimate_realizable_edge(
+            [Leg(venue=Venue.KALSHI, market_id="m", side=Side.YES)],
+            size, lambda v, mid: bk)
+        assert est.fillable_size_usd <= size, f"size={size} fillable={est.fillable_size_usd}"
+
+
+def test_basket_units_are_limited_by_the_thinnest_leg():
+    """TEST-01: мутант `units = max(ног)` вместо `min` выживал — правило
+    «баскет исполним только целыми юнитами по тончайшей ноге» не проверялось,
+    а именно оно не даёт завысить исполнимый размер и прибыль."""
+    from core.models import OrderbookLevel, OrderbookSnapshot, utcnow
+
+    def book(price, depth):
+        lvl = [OrderbookLevel(price=price, size_usd=depth)]
+        return OrderbookSnapshot(venue=Venue.KALSHI, market_id="x", as_of=utcnow(),
+                                 yes_asks=lvl, yes_bids=lvl)
+
+    # Нога A глубокая, нога B тонкая: юнитов может быть только по B.
+    books = {("kalshi", "a"): book(0.60, 1_000_000), ("kalshi", "b"): book(0.70, 50)}
+    est = algorithms.estimate_realizable_edge(
+        [Leg(venue=Venue.KALSHI, market_id="a", side=Side.YES),
+         Leg(venue=Venue.KALSHI, market_id="b", side=Side.NO)],
+        1000, lambda v, mid: books.get((v, mid)))
+
+    # B даёт 50/0.7 ≈ 71.4 контракта; A дал бы 500/0.6 ≈ 833. Капитал считается
+    # по МЕНЬШЕЙ: 71.4 * (0.60 + 0.30) ≈ 64, а не по большей (≈750).
+    assert est.fillable_size_usd < 100, f"капитал {est.fillable_size_usd} — взята не тончайшая нога"
+
+
+def test_gross_and_realizable_are_the_same_unit():
+    """INV-006: оба числа лежат в одном ответе, и агент их естественно
+    сравнивает. Раньше gross был абсолютной величиной на юнит, а realizable —
+    долей капитала; совпадали они лишь при стоимости юнита ~1."""
+    from core.models import OrderbookLevel, OrderbookSnapshot, utcnow
+
+    def book(price):
+        lvl = [OrderbookLevel(price=price, size_usd=1_000_000)]
+        return OrderbookSnapshot(venue=Venue.POLYMARKET, market_id="x", as_of=utcnow(),
+                                 yes_asks=lvl, yes_bids=lvl)
+
+    # Дешёвый баскет (стоимость юнита 0.30) — там, где старая семантика врала.
+    books = {("polymarket", "a"): book(0.15), ("polymarket", "b"): book(0.85)}
+    est = algorithms.estimate_realizable_edge(
+        [Leg(venue=Venue.POLYMARKET, market_id="a", side=Side.YES),
+         Leg(venue=Venue.POLYMARKET, market_id="b", side=Side.NO)],
+        1000, lambda v, mid: books.get((v, mid)))
+    # Стоимость юнита 0.15 + 0.15 = 0.30 -> доходность (1-0.3)/0.3 = 233%.
+    assert est.gross_edge == pytest.approx((1.0 - 0.30) / 0.30, abs=1e-3)
+    # Разница между gross и realizable — ровно издержки исполнения, не единицы.
+    assert est.realizable_edge < est.gross_edge

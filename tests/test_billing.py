@@ -406,3 +406,31 @@ async def test_metering_failure_does_not_mask_a_real_tool_error(client, monkeypa
     with pytest.raises(Exception) as exc:
         await client.call_tool("find_mispricing", {"min_edge": 0.02})
     assert "engine exploded" in str(exc.value)     # не "disk I/O error"
+
+
+def test_replay_is_rejected_before_reaching_the_facilitator(tmp_path):
+    """TEST-01: мутант, снимающий проверку повтора, выживал — прежний тест не
+    различал, какой из барьеров сработал, и поэтому не проверял главное: что
+    повторный платёж НЕ ДОХОДИТ до расчёта."""
+    from predmarket_mcp.billing.x402 import Facilitator, Receipt, encode_payment_header
+
+    settles = []
+
+    class CountingFacilitator(Facilitator):
+        def verify_and_settle(self, payment, requirement):
+            settles.append(requirement.tool_name)
+            return Receipt("r", requirement.tool_name, requirement.price_usd,
+                           "USDC", "base", "payer", "op", "0xtx")
+
+    billing = _paid_billing(tmp_path)
+    billing.facilitator = CountingFacilitator()
+    header = _valid_header(billing, "70000")
+    body = _tool_call_body("find_mispricing", {"min_edge": 0.02})
+    calls = [("find_mispricing", {"min_edge": 0.02})]
+    headers = {"x-payment": header}
+
+    assert billing.check_x402(calls, headers).ok is True
+    assert len(settles) == 1
+    # Повтор: расчёта быть не должно вообще, а не «должен быть отклонён после».
+    assert billing.check_x402(calls, headers).ok is False
+    assert len(settles) == 1, "повторный платёж дошёл до фасилитатора"

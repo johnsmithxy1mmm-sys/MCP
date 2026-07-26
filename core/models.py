@@ -192,8 +192,14 @@ class MultiOutcomeMarket(BaseModel):
     @property
     def normalized(self) -> list[dict]:
         """De-vigged probabilities: each outcome's share of the total, so they sum
-        to exactly 1 — the market's 'true' probabilities with the margin removed."""
-        t = self.total_probability
+        to exactly 1 — the market's 'true' probabilities with the margin removed.
+
+        Divides by the UNROUNDED total. ``total_probability`` is rounded for
+        display, and dividing by that pushed the de-vigged shares off 1 by up to
+        ~0.2% on small probabilities, breaking the one property that defines
+        de-vigging (audit INV-011).
+        """
+        t = sum(o.yes_price for o in self.outcomes)
         return [{"name": o.name, "market_id": o.market_id,
                  "raw_probability": o.yes_price,
                  "fair_probability": round(o.yes_price / t, 4) if t else 0.0}
@@ -224,7 +230,11 @@ class ExecutionEstimate(BaseModel):
     requested_size_usd: float
     fillable_size_usd: float
     avg_fill_price: float
-    gross_edge: float
+    gross_edge: float = Field(
+        description="Return on deployed capital at top-of-book, BEFORE fees, gas "
+        "and slippage. Same unit as realizable_edge, so the difference between "
+        "them is exactly the execution cost. 0 for a naked leg (no guaranteed "
+        "payout to measure a return against).")
     fees_usd: float
     gas_usd: float
     slippage_usd: float
