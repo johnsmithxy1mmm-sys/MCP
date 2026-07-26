@@ -6,7 +6,6 @@ import json
 
 import pytest
 
-from predmarket_mcp.billing.metering import LocalBackend
 from predmarket_mcp.billing.middleware import (
     BillingContext,
     X402Middleware,
@@ -58,9 +57,14 @@ def _paid_billing(tmp_path) -> BillingContext:
 async def _run_asgi(mw, body: bytes, headers: list) -> tuple[int, bytes]:
     scope = {"type": "http", "method": "POST", "path": "/mcp", "headers": headers}
     sent = []
+    # The transport yields the body once, then http.disconnect on every later
+    # receive() — exactly like a real ASGI server after the request body.
+    events = [{"type": "http.request", "body": body, "more_body": False}]
 
     async def receive():
-        return {"type": "http.request", "body": body, "more_body": False}
+        if events:
+            return events.pop(0)
+        return {"type": "http.disconnect"}
 
     async def send(m):
         sent.append(m)
@@ -79,6 +83,21 @@ def _tool_call_body(name: str, args: dict) -> bytes:
 
 
 async def _ok_downstream(scope, receive, send):
+    # Read the full body via receive (proves the middleware replays it), then
+    # do one more receive expecting http.disconnect (the real handler does this;
+    # a broken replay that emits synthetic http.request messages would hang or
+    # never deliver the disconnect).
+    body = b""
+    while True:
+        msg = await receive()
+        if msg["type"] == "http.request":
+            body += msg.get("body", b"")
+            if not msg.get("more_body", False):
+                break
+        else:
+            break
+    disconnect = await receive()
+    assert disconnect["type"] == "http.disconnect", "replay must delegate to real receive"
     await send({"type": "http.response.start", "status": 200,
                 "headers": [(b"content-type", b"application/json")]})
     await send({"type": "http.response.body", "body": b'{"ok":true}'})
@@ -132,6 +151,55 @@ async def test_underpayment_is_rejected(tmp_path):
     assert "insufficient" in json.loads(body).get("error_detail", "")
 
 
+def _valid_header(billing, value="50000", to="0xop"):
+    return encode_payment_header({
+        "scheme": "exact", "network": billing.settings.x402_network,
+        "payload": {"signature": "0xsig",
+                    "authorization": {"from": "0xpayer", "to": to, "value": value}},
+    })
+
+
+def _batch_body(*names_args) -> bytes:
+    return json.dumps([
+        {"jsonrpc": "2.0", "id": i, "method": "tools/call",
+         "params": {"name": n, "arguments": a}}
+        for i, (n, a) in enumerate(names_args)
+    ]).encode()
+
+
+@pytest.mark.asyncio
+async def test_replayed_payment_is_rejected(tmp_path):
+    """A1: the same signed X-PAYMENT can be used exactly once."""
+    billing = _paid_billing(tmp_path)
+    mw = X402Middleware(_ok_downstream, billing)
+    header = _valid_header(billing)
+    body = _tool_call_body("find_mispricing", {"min_edge": 0.02})
+    first, _ = await _run_asgi(mw, body, [(b"x-payment", header.encode())])
+    second, resp = await _run_asgi(mw, body, [(b"x-payment", header.encode())])
+    assert first == 200
+    assert second == 402
+    assert json.loads(resp).get("error_detail") == "payment_reused"
+    assert billing.receipts.count() == 1  # only the first settled
+
+
+@pytest.mark.asyncio
+async def test_batch_must_pay_the_sum(tmp_path):
+    """A2: N paid calls in one request need one payment covering their sum."""
+    billing = _paid_billing(tmp_path)
+    mw = X402Middleware(_ok_downstream, billing)
+    # find_mispricing ($0.05) + compare_across_venues ($0.02) = $0.07 = 70000 atomic.
+    batch = _batch_body(
+        ("find_mispricing", {"min_edge": 0.02}),
+        ("compare_across_venues", {"event": "btc"}),
+    )
+    # Paying only for one tool ($0.05) is rejected as underpayment.
+    under, ubody = await _run_asgi(mw, batch, [(b"x-payment", _valid_header(billing, "50000").encode())])
+    assert under == 402 and "insufficient" in json.loads(ubody).get("error_detail", "")
+    # Paying the full sum passes.
+    ok, _ = await _run_asgi(mw, batch, [(b"x-payment", _valid_header(billing, "70000").encode())])
+    assert ok == 200
+
+
 @pytest.mark.asyncio
 async def test_free_tool_bypasses_gate(tmp_path):
     billing = _paid_billing(tmp_path)
@@ -150,6 +218,30 @@ async def test_gate_off_lets_paid_tool_through(tmp_path):
     assert status == 200
 
 
+# --- privacy (A3) -----------------------------------------------------------
+def test_client_fingerprint_never_stores_raw_secret():
+    from predmarket_mcp.billing.middleware import client_fingerprint
+
+    assert client_fingerprint({"x-client-id": "acme"}) == "acme"
+    fp = client_fingerprint({"authorization": "Bearer super-secret"})
+    assert fp.startswith("auth-") and "super-secret" not in fp
+    assert client_fingerprint({}) is None
+
+
+@pytest.mark.asyncio
+async def test_metering_stores_param_shape_not_values(client):
+    import json as _json
+    from predmarket_mcp.billing.middleware import get_billing
+
+    billing = get_billing()
+    before = billing.metering.count()
+    await client.call_tool("find_mispricing", {"min_edge": 0.02})
+    rec = billing.metering.records()[-1]
+    assert billing.metering.count() == before + 1
+    params = _json.loads(rec["params"])
+    assert params == {"keys": ["min_edge"], "count": 1}  # shape only, no value 0.02
+
+
 # --- pricing sanity ---------------------------------------------------------
 def test_pricing_tiers_match_spec():
     from predmarket_mcp.billing.tiers import load_pricing
@@ -159,3 +251,186 @@ def test_pricing_tiers_match_spec():
     assert pricing.get("evaluate_market").price_usd == 0
     assert pricing.get("find_mispricing").is_paid
     assert pricing.get("find_mispricing").price_usd == 0.05
+
+
+# --- body-size cap (memory-DoS guard) ---------------------------------------
+@pytest.mark.asyncio
+async def test_oversized_body_rejected_with_413(tmp_path, monkeypatch):
+    import predmarket_mcp.billing.middleware as mwmod
+
+    monkeypatch.setattr(mwmod, "MAX_BODY_BYTES", 1024)
+    billing = _paid_billing(tmp_path)
+    mw = X402Middleware(_ok_downstream, billing)
+    status, body = await _run_asgi(mw, b"x" * 2048, [])
+    assert status == 413
+    assert json.loads(body)["error"] == "payload_too_large"
+
+
+@pytest.mark.asyncio
+async def test_normal_body_passes_under_the_cap(tmp_path):
+    billing = _paid_billing(tmp_path)
+    mw = X402Middleware(_ok_downstream, billing)
+    # A free-tool call well under the cap flows through untouched.
+    status, _ = await _run_asgi(mw, _tool_call_body("search_markets", {"query": "fed"}), [])
+    assert status == 200
+
+
+# --- nonce store TTL prune --------------------------------------------------
+def test_nonce_store_prunes_expired_fingerprints(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from predmarket_mcp.billing.x402 import NonceStore
+
+    monkeypatch.setenv("NONCE_TTL_SECONDS", "3600")
+    store = NonceStore(f"sqlite:///{tmp_path / 'n.db'}", redis_client=None)
+    # Seed one expired fingerprint directly, then trigger a prune via mark_used.
+    old_ts = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    with store._connect() as conn:
+        conn.execute("INSERT INTO used_payments (fingerprint, ts) VALUES (?, ?)",
+                     ("stale-fp", old_ts))
+    assert store.mark_used("fresh-fp") is True
+    assert store.is_used("stale-fp") is False  # swept
+    assert store.is_used("fresh-fp") is True   # kept
+
+
+# --- INV-001: settle-once под конкурентностью (регрессия аудита) -------------
+def test_concurrent_same_payment_settles_at_most_once(tmp_path):
+    """Два одновременных запроса с ОДНИМ подписанным X-PAYMENT.
+
+    Расчёт необратим (реальный перевод USDC), поэтому инвариант жёсткий: сколько
+    бы потоков ни гонялось, до фасилитатора доходит не больше одного расчёта.
+    До правки оба потока проходили is_used() и оба расчитывались — плательщик
+    списывался дважды за один обслуженный вызов, а /revenue показывал 0
+    расхождения.
+    """
+    import threading
+    from predmarket_mcp.billing.x402 import Facilitator, Receipt, encode_payment_header
+
+    settles = []
+    slock = threading.Lock()
+
+    class CountingFacilitator(Facilitator):
+        def verify_and_settle(self, payment, requirement):
+            with slock:
+                settles.append(requirement.tool_name)
+            return Receipt("r", requirement.tool_name, requirement.price_usd,
+                           "USDC", "base", "payer", "op", "0xtx")
+
+    billing = _paid_billing(tmp_path)
+    billing.facilitator = CountingFacilitator()
+    payment = {"scheme": "exact", "network": "base-sepolia",
+               "payload": {"signature": "0xSIG",
+                           "authorization": {"value": "5000000", "from": "0xA"}}}
+    headers = {"x-payment": encode_payment_header(payment)}
+    calls = [("find_mispricing", {"min_edge": 0.02})]
+
+    ok = []
+    barrier = threading.Barrier(2)
+
+    def worker():
+        barrier.wait()
+        ok.append(billing.check_x402(calls, headers).ok)
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(settles) <= 1, f"платёж расчитан {len(settles)} раз — плательщик списан дважды"
+    assert sum(ok) == 1, "ровно один вызов должен быть обслужен"
+    assert billing.receipts.count() == len(settles)  # книги сходятся с расчётами
+
+
+def test_failed_settlement_does_not_free_the_claim(tmp_path):
+    """Отказ расчёта не должен вновь открывать окно двойного списания."""
+    from predmarket_mcp.billing.x402 import Facilitator, PaymentError, encode_payment_header
+
+    class FailingFacilitator(Facilitator):
+        def verify_and_settle(self, payment, requirement):
+            raise PaymentError("facilitator /settle HTTP 502")
+
+    billing = _paid_billing(tmp_path)
+    billing.facilitator = FailingFacilitator()
+    payment = {"scheme": "exact", "network": "base-sepolia",
+               "payload": {"signature": "0xSIG", "authorization": {"value": "5000000"}}}
+    headers = {"x-payment": encode_payment_header(payment)}
+    calls = [("find_mispricing", {"min_edge": 0.02})]
+
+    first = billing.check_x402(calls, headers)
+    second = billing.check_x402(calls, headers)
+    assert first.ok is False and second.ok is False
+    # Второй отказ — именно из-за занятого отпечатка, а не из-за фасилитатора.
+    assert second.challenge["error_detail"] == "payment_reused"
+
+
+# --- INV-003: отказ метеринга не решает судьбу вызова (регрессия аудита) -----
+@pytest.mark.asyncio
+async def test_metering_failure_preserves_a_successful_call(client, monkeypatch):
+    """Запись метеринга в `finally` раньше отменяла успешный `return result`.
+
+    В платном режиме платёж расчитывается ДО исполнения инструмента, поэтому
+    клиент оказывался в худшем из миров: деньги списаны, инструмент отработал,
+    ответ — ошибка, записи об этом нет.
+    """
+    from predmarket_mcp.billing.middleware import get_billing
+    from predmarket_mcp.ops import METRICS
+
+    billing = get_billing()
+
+    def boom(usage):
+        raise OSError("disk I/O error")
+
+    monkeypatch.setattr(billing.metering, "record", boom)
+    before = METRICS.snapshot().get("metering_write_failures_total", 0)
+
+    r = (await client.call_tool("find_mispricing", {"min_edge": 0.02})).data
+    assert "opportunities" in r          # результат дошёл до клиента
+
+    # ...и потеря биллинговых данных не молчаливая — она видна на /metrics.
+    after = METRICS.snapshot().get("metering_write_failures_total", 0)
+    assert after == before + 1
+
+
+@pytest.mark.asyncio
+async def test_metering_failure_does_not_mask_a_real_tool_error(client, monkeypatch):
+    """Отказ хранилища не должен подменять настоящую ошибку инструмента."""
+    from predmarket_mcp.billing.middleware import get_billing
+    from predmarket_mcp import deps
+
+    billing = get_billing()
+    monkeypatch.setattr(billing.metering, "record",
+                        lambda usage: (_ for _ in ()).throw(OSError("disk I/O error")))
+    monkeypatch.setattr(deps, "scan_opportunities",
+                        lambda *a, **k: (_ for _ in ()).throw(ValueError("engine exploded")))
+
+    with pytest.raises(Exception) as exc:
+        await client.call_tool("find_mispricing", {"min_edge": 0.02})
+    assert "engine exploded" in str(exc.value)     # не "disk I/O error"
+
+
+def test_replay_is_rejected_before_reaching_the_facilitator(tmp_path):
+    """TEST-01: мутант, снимающий проверку повтора, выживал — прежний тест не
+    различал, какой из барьеров сработал, и поэтому не проверял главное: что
+    повторный платёж НЕ ДОХОДИТ до расчёта."""
+    from predmarket_mcp.billing.x402 import Facilitator, Receipt, encode_payment_header
+
+    settles = []
+
+    class CountingFacilitator(Facilitator):
+        def verify_and_settle(self, payment, requirement):
+            settles.append(requirement.tool_name)
+            return Receipt("r", requirement.tool_name, requirement.price_usd,
+                           "USDC", "base", "payer", "op", "0xtx")
+
+    billing = _paid_billing(tmp_path)
+    billing.facilitator = CountingFacilitator()
+    header = _valid_header(billing, "70000")
+    body = _tool_call_body("find_mispricing", {"min_edge": 0.02})
+    calls = [("find_mispricing", {"min_edge": 0.02})]
+    headers = {"x-payment": header}
+
+    assert billing.check_x402(calls, headers).ok is True
+    assert len(settles) == 1
+    # Повтор: расчёта быть не должно вообще, а не «должен быть отклонён после».
+    assert billing.check_x402(calls, headers).ok is False
+    assert len(settles) == 1, "повторный платёж дошёл до фасилитатора"

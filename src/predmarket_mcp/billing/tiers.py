@@ -26,6 +26,29 @@ class ToolPricing:
         return self.tier == "paid" and self.price_usd > 0
 
 
+def _history_price(base: float, args: dict) -> float:
+    """get_market_history is a data product — scale with the requested range.
+
+    +$0.005 per 30 days of history, capped at $0.10, floored at the base price.
+    A wider query is worth more; a bad/one-day range still pays the base.
+    """
+    from datetime import datetime
+
+    try:
+        def _p(v):
+            return datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+        days = max(0.0, (_p(args["to_ts"]) - _p(args["from_ts"])).total_seconds() / 86400.0)
+    except Exception:
+        return base
+    return min(0.10, base + 0.005 * (days / 30.0))
+
+
+# Per-tool value-based pricing rules: (base_price, arguments) -> price. Tools not
+# listed here charge their flat pricing.yaml price. Every rule must be monotone
+# and capped so a caller can always bound cost from the args before paying.
+_DYNAMIC_RULES = {"get_market_history": _history_price}
+
+
 @dataclass(frozen=True)
 class Pricing:
     currency: str
@@ -37,6 +60,15 @@ class Pricing:
 
     def is_paid(self, tool_name: str) -> bool:
         return self.get(tool_name).is_paid
+
+    def price_for(self, tool_name: str, arguments: dict | None = None) -> float:
+        """Actual charge for a call: the flat price, or a value-based amount when
+        the tool has a dynamic rule and arguments are provided."""
+        base = self.get(tool_name).price_usd
+        rule = _DYNAMIC_RULES.get(tool_name)
+        if rule is not None and arguments:
+            return round(max(base, rule(base, arguments)), 6)
+        return round(base, 6)
 
 
 def _load(path: Path) -> Pricing:

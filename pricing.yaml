@@ -24,6 +24,9 @@ tools:
   evaluate_market:
     tier: free
     price_usd: 0
+  track_record:
+    tier: free
+    price_usd: 0
 
   # --- paid tier (per-call revenue) ---
   find_mispricing:
@@ -38,3 +41,15 @@ tools:
   get_market_history:
     tier: paid
     price_usd: 0.01
+  watch:
+    tier: paid
+    price_usd: 0.02
+  poll_alerts:
+    tier: paid
+    price_usd: 0.005
+  simulate_strategy:
+    tier: paid
+    price_usd: 0.02
+  assess_portfolio:
+    tier: paid
+    price_usd: 0.03

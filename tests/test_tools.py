@@ -12,15 +12,20 @@ async def test_catalog_size(client):
     tools = await client.list_tools()
     names = sorted(t.name for t in tools)
     assert names == [
+        "assess_portfolio",
         "compare_across_venues",
         "estimate_execution",
         "evaluate_market",
         "find_mispricing",
         "get_market_history",
         "list_venues",
+        "poll_alerts",
         "search_markets",
+        "simulate_strategy",
+        "track_record",
+        "watch",
     ]
-    # Hard ceiling from the design principles: <= 15 tools.
+    # Hard ceiling from the design principles: <= 15 tools (target 10-12).
     assert len(names) <= 15
 
 
@@ -43,14 +48,22 @@ async def test_list_venues_shape(client):
 
 @pytest.mark.asyncio
 async def test_evaluate_market_is_delayed_on_free_tier(client):
+    from predmarket_mcp import deps
+    from datetime import timedelta
+
     r = (await client.call_tool(
         "evaluate_market", {"venue": "polymarket", "market_id": "pm-btc-100k-2026"}
     )).data
-    assert r["realtime"] is False
-    # Free tier serves data delayed by ~free_tier_delay_seconds.
+    assert r["realtime"] is False and r["delayed"] is True
     delay = get_settings().free_tier_delay_seconds
+    # The price is genuinely old (real history point), not backdated live data.
     assert r["data_age_seconds"] >= delay - 1
-    assert r["orderbook"]["yes_asks"]
+    now = deps.now()
+    pts = deps.get_history(
+        "polymarket", "pm-btc-100k-2026",
+        now - timedelta(hours=6), now - timedelta(seconds=delay),
+    )
+    assert r["market"]["yes_price"] == pts[-1].yes_price  # served from history
 
 
 @pytest.mark.asyncio

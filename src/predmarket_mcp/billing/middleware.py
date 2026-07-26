@@ -16,11 +16,15 @@ but does not gate at launch (usage first, billing later).
 
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
+import os
 import time
 from dataclasses import dataclass
 from functools import lru_cache
 
+import anyio
 from starlette.middleware import Middleware as ASGIMiddleware
 
 from fastmcp import FastMCP
@@ -32,14 +36,37 @@ from .metering import UsageRecord, build_backend
 from .tiers import Pricing, load_pricing
 from .x402 import (
     Facilitator,
-    MockFacilitator,
+    NonceStore,
     PaymentError,
     PaymentRequirement,
     ReceiptStore,
+    build_facilitator,
     decode_payment_header,
+    payment_fingerprint,
 )
 
+_log = logging.getLogger("predmarket.billing")
+
 PAYMENT_HEADER = "x-payment"
+
+# Payment gating buffers the request body to inspect the JSON-RPC calls; cap it
+# so an oversized POST can't balloon memory. Normal MCP payloads are a few KB.
+MAX_BODY_BYTES = int(os.getenv("X402_MAX_BODY_BYTES", str(2 * 1024 * 1024)))
+
+
+def client_fingerprint(headers: dict[str, str]) -> str | None:
+    """Stable, privacy-preserving caller id — never the raw secret.
+
+    x-client-id verbatim; otherwise a hash of the Authorization header (so the
+    bearer token is never persisted); else None.
+    """
+    cid = headers.get("x-client-id")
+    if cid:
+        return cid
+    auth = headers.get("authorization")
+    if auth:
+        return "auth-" + hashlib.sha256(auth.encode()).hexdigest()[:16]
+    return None
 
 
 # --- shared, process-wide billing state -------------------------------------
@@ -51,7 +78,28 @@ class BillingContext:
         self.pricing: Pricing = load_pricing()
         self.metering = build_backend(settings)
         self.receipts = ReceiptStore(settings.metering_db_url)
-        self.facilitator: Facilitator = MockFacilitator(settings)
+        self.nonces = NonceStore(settings.metering_db_url)
+        self.facilitator: Facilitator = build_facilitator(settings)
+
+    def revenue_summary(self) -> dict:
+        """Reconcile what we CHARGED (metered paid calls) against what SETTLED
+        (receipts) — business-level 'money not lost/doubled'."""
+        try:
+            usage = self.metering.records()
+        except Exception:
+            usage = []
+        paid = [u for u in usage if u.get("paid_via")]
+        charged = round(sum(float(u.get("price_usd") or 0) for u in paid), 6)
+        receipts = self.receipts.all()
+        settled = round(sum(float(r.get("amount_usd") or 0) for r in receipts), 6)
+        return {
+            "charged_usd": charged,
+            "charged_calls": len(paid),
+            "settled_usd": settled,
+            "settled_receipts": len(receipts),
+            "discrepancy_usd": round(charged - settled, 6),
+            "currency": self.pricing.currency,
+        }
 
     # -- gating helpers ----------------------------------------------------
     def gate_active(self) -> bool:
@@ -60,31 +108,58 @@ class BillingContext:
     def is_paid(self, tool_name: str) -> bool:
         return self.pricing.is_paid(tool_name)
 
-    def requirement(self, tool_name: str) -> PaymentRequirement:
-        p = self.pricing.get(tool_name)
+    def requirement(self, calls: list[tuple[str, dict]]) -> PaymentRequirement:
+        """Payment requirement for one paid call — or a batch (sum of prices).
+
+        Each call is ``(tool_name, arguments)``; the amount is value-based
+        (``price_for``) so e.g. a wider history query costs more. The total is the
+        sum across the batch, so N calls need one payment covering all N.
+        """
+        names = [name for name, _ in calls]
+        total = sum(self.pricing.price_for(name, args) for name, args in calls)
         return PaymentRequirement(
-            tool_name=tool_name,
-            price_usd=p.price_usd,
+            tool_name="+".join(names),
+            price_usd=round(total, 6),
             currency=self.pricing.currency,
             network=self.settings.x402_network,
             pay_to=self.settings.operator_wallet,
         )
 
-    def check_x402(self, tool_name: str, headers: dict[str, str]) -> "PaymentDecision":
-        """Verify payment for a paid tool. Saves a receipt on success."""
-        requirement = self.requirement(tool_name)
+    def check_x402(self, calls: list[tuple[str, dict]], headers: dict[str, str]) -> "PaymentDecision":
+        """Verify payment for paid tool call(s). Replay-safe; one receipt on success.
+
+        A batch of N paid calls requires ONE payment covering the SUM of their
+        (value-based) prices. A previously-consumed signed payment is rejected.
+        """
+        requirement = self.requirement(calls)
         raw = headers.get(PAYMENT_HEADER)
         if not raw:
             return PaymentDecision(ok=False, challenge=requirement.to_challenge())
         try:
             payment = decode_payment_header(raw)
+            fingerprint = payment_fingerprint(payment)
+            # CLAIM the fingerprint atomically BEFORE settling. Settlement moves
+            # real USDC and cannot be undone, so the claim must come first. The
+            # previous order (is_used -> settle -> mark_used) let two concurrent
+            # requests both pass the check and both reach the facilitator,
+            # charging the payer twice for one served call while the books
+            # recorded a single receipt — invisible to /revenue (audit INV-001).
+            #
+            # The claim is deliberately NOT released when settlement fails: a
+            # failed settlement moved no money, so the caller loses nothing by
+            # presenting a freshly signed payment, whereas releasing would
+            # re-open the double-settle window whenever a facilitator error is
+            # ambiguous about whether the transfer actually went through.
+            if not self.nonces.mark_used(fingerprint):
+                raise PaymentError("payment_reused")
             receipt = self.facilitator.verify_and_settle(payment, requirement)
         except PaymentError as exc:
             challenge = requirement.to_challenge()
             challenge["error_detail"] = str(exc)
             return PaymentDecision(ok=False, challenge=challenge)
         self.receipts.save(receipt)
-        return PaymentDecision(ok=True, challenge=None, receipt_id=receipt.receipt_id)
+        return PaymentDecision(ok=True, challenge=None, receipt_id=receipt.receipt_id,
+                               payer=receipt.payer)
 
 
 @dataclass
@@ -92,6 +167,10 @@ class PaymentDecision:
     ok: bool
     challenge: dict | None
     receipt_id: str | None = None
+    # Payer address from the VERIFIED payment. This is a proven identity (the
+    # facilitator checked the signature), so the identity layer can key
+    # ownership on it — "whoever paid owns it" (audit INV-002).
+    payer: str | None = None
 
 
 @lru_cache(maxsize=1)
@@ -116,8 +195,13 @@ class MeteringMiddleware(Middleware):
         elif self.billing.settings.paid_enabled and self.billing.settings.payment_rail == "apikey":
             paid_via = "apikey"
 
-        pricing = self.billing.pricing.get(tool_name)
-        client_id = headers.get("x-client-id") or headers.get("authorization")
+        client_id = client_fingerprint(headers)  # hashed — never the raw secret
+        args = dict(context.message.arguments or {})
+        # Charge the value-based amount (matches what the x402 gate enforces).
+        charged = self.billing.pricing.price_for(tool_name, args)
+        # Privacy: never persist raw argument VALUES (they can carry anything);
+        # keep only the shape — enough for usage analytics and billing disputes.
+        params_meta = {"keys": sorted(args.keys()), "count": len(args)}
         start = time.perf_counter()
         status = "ok"
         try:
@@ -128,18 +212,44 @@ class MeteringMiddleware(Middleware):
             raise
         finally:
             latency_ms = round((time.perf_counter() - start) * 1000, 2)
-            self.billing.metering.record(
-                UsageRecord(
-                    tool_name=tool_name,
-                    price_usd=pricing.price_usd,
-                    currency=self.billing.pricing.currency,
-                    status=status,
-                    latency_ms=latency_ms,
-                    client_id=client_id,
-                    paid_via=paid_via,
-                    params=dict(context.message.arguments or {}),
-                )
+            try:
+                from ..ops import METRICS
+
+                METRICS.observe("tool_latency_ms", latency_ms)
+                METRICS.inc("paid_calls_total")
+            except Exception:
+                pass
+            usage = UsageRecord(
+                tool_name=tool_name,
+                price_usd=charged,
+                currency=self.billing.pricing.currency,
+                status=status,
+                latency_ms=latency_ms,
+                client_id=client_id,
+                paid_via=paid_via,
+                params=params_meta,
             )
+            # SQLite write off the event loop — and it MUST NOT decide the fate
+            # of the call. Raising here (disk full, DB locked) escaped the
+            # `finally`, cancelled a successful `return result` and replaced any
+            # real tool exception with a storage error. Under the paid gate the
+            # payment has already settled by this point, so the caller would
+            # have paid, the tool would have run, and they would still get an
+            # error with no usage record (audit INV-003).
+            #
+            # The write is best effort; the FAILURE is not silent — it bumps a
+            # counter that surfaces on /metrics so lost billing data is alarmable.
+            try:
+                await anyio.to_thread.run_sync(self.billing.metering.record, usage)
+            except Exception:
+                try:
+                    from ..ops import METRICS
+
+                    METRICS.inc("metering_write_failures_total")
+                except Exception:
+                    pass
+                _log.exception(
+                    "metering write failed for %s (call outcome preserved)", tool_name)
 
 
 # --- raw ASGI middleware: real HTTP 402 enforcement -------------------------
@@ -158,18 +268,30 @@ class X402Middleware:
             return await self.app(scope, receive, send)
 
         body, messages = await _buffer_body(receive)
-        tool_name = _paid_tool_call(body, self.billing)
-        if tool_name is None:
-            return await self.app(scope, _replay(messages), send)
+        if body is None:  # over the size cap — reject before parsing anything
+            return await _send_413(send)
+        calls = _paid_tool_calls(body, self.billing)
+        if not calls:
+            return await self.app(scope, _replay(messages, receive), send)
 
         headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
-        decision = self.billing.check_x402(tool_name, headers)
+        # Payment verification does SQLite + (possibly) facilitator HTTP —
+        # run it off the event loop.
+        decision = await anyio.to_thread.run_sync(
+            self.billing.check_x402, calls, headers
+        )
         if not decision.ok:
             return await _send_402(send, decision.challenge)
-        return await self.app(scope, _replay(messages), send)
+        # Publish the proven payer for the rest of this request: the tool layer
+        # uses it as an identity that the caller cannot forge.
+        from ..identity import set_verified_payer
+
+        set_verified_payer(decision.payer)
+        return await self.app(scope, _replay(messages, receive), send)
 
 
 async def _buffer_body(receive):
+    """Buffer the request body (returns ``(None, messages)`` when over the cap)."""
     body = b""
     messages = []
     more = True
@@ -178,36 +300,68 @@ async def _buffer_body(receive):
         messages.append(message)
         if message["type"] == "http.request":
             body += message.get("body", b"")
+            if len(body) > MAX_BODY_BYTES:
+                return None, messages
             more = message.get("more_body", False)
         else:
             more = False
     return body, messages
 
 
-def _replay(messages):
+def _replay(messages, original_receive):
+    """Replay the buffered request messages, then delegate to the real transport.
+
+    Falling back to ``original_receive`` (instead of emitting synthetic
+    ``http.request`` messages) is essential: the streamable-HTTP handler keeps
+    calling ``receive()`` after the body to detect client disconnect. Feeding it
+    fake messages makes it hang; delegating lets ``http.disconnect`` flow.
+    """
     queue = list(messages)
 
     async def receive():
         if queue:
             return queue.pop(0)
-        return {"type": "http.request", "body": b"", "more_body": False}
+        return await original_receive()
 
     return receive
 
 
-def _paid_tool_call(body: bytes, billing: BillingContext) -> str | None:
+def _paid_tool_calls(body: bytes, billing: BillingContext) -> list[tuple[str, dict]]:
+    """Every paid (tool_name, arguments) in the request (a JSON-RPC batch may hold
+    several). Returning ALL of them — with their args, for value-based pricing —
+    is what stops a batch from paying for one call and getting the rest free.
+    """
     try:
         payload = json.loads(body or b"{}")
     except json.JSONDecodeError:
-        return None
-    calls = payload if isinstance(payload, list) else [payload]
-    for call in calls:
+        return []
+    entries = payload if isinstance(payload, list) else [payload]
+    calls: list[tuple[str, dict]] = []
+    for call in entries:
         if not isinstance(call, dict) or call.get("method") != "tools/call":
             continue
-        name = (call.get("params") or {}).get("name")
+        params = call.get("params") or {}
+        name = params.get("name")
         if name and billing.is_paid(name):
-            return name
-    return None
+            args = params.get("arguments") or {}
+            calls.append((name, args if isinstance(args, dict) else {}))
+    return calls
+
+
+async def _send_413(send):
+    body = json.dumps({"error": "payload_too_large",
+                       "detail": f"request body exceeds {MAX_BODY_BYTES} bytes"}).encode()
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 413,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(body)).encode()),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": body})
 
 
 async def _send_402(send, challenge: dict):

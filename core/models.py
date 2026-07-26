@@ -21,6 +21,7 @@ def utcnow() -> datetime:
 class Venue(str, Enum):
     POLYMARKET = "polymarket"
     KALSHI = "kalshi"
+    MANIFOLD = "manifold"
 
 
 class Side(str, Enum):
@@ -31,6 +32,8 @@ class Side(str, Enum):
 class OpportunityKind(str, Enum):
     BUNDLE = "bundle"
     CROSS_VENUE = "cross_venue"
+    DUTCH_BOOK = "dutch_book"  # mutually-exclusive outcomes priced != 1.0
+    ENTAILMENT = "entailment"  # logical-implication / term-structure violation
 
 
 class Market(BaseModel):
@@ -40,10 +43,18 @@ class Market(BaseModel):
     market_id: str
     title: str
     category: str | None = None
-    yes_price: float = Field(description="Normalized YES price in [0, 1].")
-    no_price: float = Field(description="Normalized NO price in [0, 1].")
+    # ENFORCED, not merely documented: a venue returning an out-of-range price
+    # (unit-conversion change, garbage row) used to construct a Market with
+    # yes_price=999 and poison every downstream number — edge, probabilities,
+    # the house forecast, calibration — and persist it to history (audit
+    # INV-005). Adapters skip rows that fail this check rather than crash.
+    yes_price: float = Field(ge=0.0, le=1.0, description="Normalized YES price in [0, 1].")
+    no_price: float = Field(ge=0.0, le=1.0, description="Normalized NO price in [0, 1].")
     volume_usd: float | None = None
     close_time: datetime | None = None
+    # Mutually-exclusive outcome group (e.g. "2028-president-party"); markets that
+    # share a group are complementary outcomes whose YES prices should sum to ~1.
+    event_group: str | None = None
 
     @property
     def implied_probability(self) -> float:
@@ -99,6 +110,104 @@ class Opportunity(BaseModel):
     )
     legs: list[Leg]
     detected_at: datetime = Field(default_factory=utcnow)
+    # --- risk adjustment (edge is only as good as the time/risk to realize it) ---
+    holding_days: float | None = Field(
+        default=None,
+        description="Days to market resolution — capital is locked until then.",
+    )
+    annualized_edge: float | None = Field(
+        default=None,
+        description="realizable_edge annualized over holding_days (edge / days * 365).",
+    )
+    resolution_risk: float | None = Field(
+        default=None,
+        description="0..1 haircut for resolution-source / settlement risk.",
+    )
+    fair_value: float | None = Field(
+        default=None,
+        description="Liquidity-weighted cross-venue consensus YES probability, "
+        "when known — the anchor the edge is measured against.",
+    )
+    survival_probability: float | None = Field(
+        default=None,
+        description="Empirical P(this opportunity is still open after the "
+        "execution window), learned from how long past opportunities of this "
+        "kind/category lasted. None until enough history exists.",
+    )
+    expected_value: float | None = Field(
+        default=None,
+        description="realizable_edge weighted by survival_probability — the "
+        "honest ranking key ('an edge you can actually reach').",
+    )
+    velocity: dict | None = Field(
+        default=None,
+        description="Capital-velocity metrics: capital_efficiency (EV per locked "
+        "day), compound_annual_growth under recycling, early-exit liquidity.",
+    )
+    adverse: dict | None = Field(
+        default=None,
+        description="Adverse-selection assessment: trap_score (0..1, how likely "
+        "you're the one being picked off), factors, and trust_adjusted_edge.",
+    )
+
+
+class Outcome(BaseModel):
+    """One mutually-exclusive outcome of a multi-outcome event (a candidate,
+    a bracket, …), backed by a single binary market."""
+
+    name: str
+    venue: Venue
+    market_id: str
+    yes_price: float = Field(description="Market's YES probability for this outcome.")
+    volume_usd: float | None = None
+
+
+class MultiOutcomeMarket(BaseModel):
+    """A set of mutually-exclusive outcomes for one event (election with N
+    candidates, a numeric range split into brackets, …).
+
+    Binary markets stay the primitive; this is the aggregate view over a group of
+    them that share an ``event_group``. Its probabilities should sum to ~1 — the
+    excess is the venue's margin (overround / vig), which de-vigging removes.
+    """
+
+    event: str
+    outcomes: list[Outcome]
+    category: str | None = None
+    close_time: datetime | None = None
+    # Whether the listed outcomes cover EVERY possibility. Matters for arbitrage:
+    # an under-round (sum < 1) is only free money if the set is complete.
+    complete: bool = False
+
+    @property
+    def total_probability(self) -> float:
+        return round(sum(o.yes_price for o in self.outcomes), 4)
+
+    @property
+    def overround(self) -> float:
+        """Sum of outcome probabilities minus 1 — the bookmaker's margin (+) or a
+        gap (–, often just an incomplete set)."""
+        return round(self.total_probability - 1.0, 4)
+
+    @property
+    def normalized(self) -> list[dict]:
+        """De-vigged probabilities: each outcome's share of the total, so they sum
+        to exactly 1 — the market's 'true' probabilities with the margin removed.
+
+        Divides by the UNROUNDED total. ``total_probability`` is rounded for
+        display, and dividing by that pushed the de-vigged shares off 1 by up to
+        ~0.2% on small probabilities, breaking the one property that defines
+        de-vigging (audit INV-011).
+        """
+        t = sum(o.yes_price for o in self.outcomes)
+        return [{"name": o.name, "market_id": o.market_id,
+                 "raw_probability": o.yes_price,
+                 "fair_probability": round(o.yes_price / t, 4) if t else 0.0}
+                for o in self.outcomes]
+
+    @property
+    def favorite(self) -> str | None:
+        return max(self.outcomes, key=lambda o: o.yes_price).name if self.outcomes else None
 
 
 class MatchedPair(BaseModel):
@@ -121,12 +230,20 @@ class ExecutionEstimate(BaseModel):
     requested_size_usd: float
     fillable_size_usd: float
     avg_fill_price: float
-    gross_edge: float
+    gross_edge: float = Field(
+        description="Return on deployed capital at top-of-book, BEFORE fees, gas "
+        "and slippage. Same unit as realizable_edge, so the difference between "
+        "them is exactly the execution cost. 0 for a naked leg (no guaranteed "
+        "payout to measure a return against).")
     fees_usd: float
     gas_usd: float
     slippage_usd: float
     realizable_edge: float = Field(
         description="Net edge after fees + gas + slippage on the fillable size."
+    )
+    cost_breakdown: dict = Field(
+        default_factory=dict,
+        description="Per-venue fee/gas breakdown so the agent can see where cost went.",
     )
 
 

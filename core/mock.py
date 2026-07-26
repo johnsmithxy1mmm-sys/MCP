@@ -12,8 +12,11 @@ from __future__ import annotations
 
 import hashlib
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
+from .algorithms import estimate_realizable_edge, finalize_opportunities, scan_dutch_book
+from .entailment import scan_entailment
+from .fairvalue import consensus
 from .models import (
     ExecutionEstimate,
     Leg,
@@ -29,10 +32,14 @@ from .models import (
     utcnow,
 )
 
-# --- Fee / cost model (mock) ------------------------------------------------
-# Realistic-ish taker fees and gas. Real engine sources these live per venue.
-_FEE_BPS = {Venue.POLYMARKET: 0.0, Venue.KALSHI: 0.07}  # Kalshi ~7% of profit-ish
-_GAS_USD = {Venue.POLYMARKET: 0.35, Venue.KALSHI: 0.0}  # onchain gas vs none
+# --- Fee / cost model -------------------------------------------------------
+# The mock uses the SAME cost model as the live engine (core.algorithms) rather
+# than its own constants: a mock that quotes cheaper costs than production would
+# show edges that evaporate the moment CORE_ENGINE=live, which is exactly the
+# dishonesty this product exists to avoid. No gas override is passed anywhere —
+# each leg resolves gas_for() at call time so env overrides always apply.
+# Spread/fee/gas haircut applied to the curated cross-venue fixtures below.
+_COST_HAIRCUT = 0.008
 
 
 # --- Seed catalog -----------------------------------------------------------
@@ -46,6 +53,19 @@ _MARKETS: list[Market] = [
         yes_price=0.52,
         no_price=0.48,
         volume_usd=4_820_000,
+        event_group="us-2028-president-party",
+        close_time=datetime(2028, 11, 7, tzinfo=timezone.utc),
+    ),
+    Market(
+        venue=Venue.POLYMARKET,
+        market_id="pm-us-election-2028-rep",
+        title="Will the Republican nominee win the 2028 US Presidential election?",
+        category="politics",
+        yes_price=0.45,
+        no_price=0.55,
+        volume_usd=4_610_000,
+        event_group="us-2028-president-party",  # dem+rep YES sum 0.97 -> Dutch book
+        close_time=datetime(2028, 11, 7, tzinfo=timezone.utc),
     ),
     Market(
         venue=Venue.KALSHI,
@@ -64,6 +84,7 @@ _MARKETS: list[Market] = [
         yes_price=0.71,
         no_price=0.29,
         volume_usd=2_040_000,
+        close_time=datetime(2026, 12, 31, tzinfo=timezone.utc),
     ),
     Market(
         venue=Venue.KALSHI,
@@ -73,6 +94,28 @@ _MARKETS: list[Market] = [
         yes_price=0.66,
         no_price=0.34,
         volume_usd=560_000,
+        close_time=datetime(2026, 12, 31, tzinfo=timezone.utc),
+    ),
+    # A threshold ladder on the same quantity -> an implied distribution (H1).
+    Market(
+        venue=Venue.POLYMARKET,
+        market_id="pm-btc-150k-2026",
+        title="Will Bitcoin close above $150k at end of 2026?",
+        category="crypto",
+        yes_price=0.45,
+        no_price=0.55,
+        volume_usd=1_120_000,
+        close_time=datetime(2026, 12, 31, tzinfo=timezone.utc),
+    ),
+    Market(
+        venue=Venue.POLYMARKET,
+        market_id="pm-btc-200k-2026",
+        title="Will Bitcoin close above $200k at end of 2026?",
+        category="crypto",
+        yes_price=0.22,
+        no_price=0.78,
+        volume_usd=740_000,
+        close_time=datetime(2026, 12, 31, tzinfo=timezone.utc),
     ),
     Market(
         venue=Venue.POLYMARKET,
@@ -82,6 +125,7 @@ _MARKETS: list[Market] = [
         yes_price=0.40,
         no_price=0.60,
         volume_usd=890_000,
+        close_time=datetime(2026, 9, 17, tzinfo=timezone.utc),
     ),
     Market(
         venue=Venue.KALSHI,
@@ -91,6 +135,7 @@ _MARKETS: list[Market] = [
         yes_price=0.43,
         no_price=0.57,
         volume_usd=610_000,
+        close_time=datetime(2026, 9, 17, tzinfo=timezone.utc),
     ),
 ]
 
@@ -263,7 +308,7 @@ def scan_opportunities(
     out: list[Opportunity] = []
 
     # Cross-venue: any matched pair whose spread net of costs beats min_edge.
-    for label, pm_id, kx_id, conf in _MATCHES:
+    for label, pm_id, kx_id, _conf in _MATCHES:
         a, b = _by_id(pm_id), _by_id(kx_id)
         if not a or not b:
             continue
@@ -271,8 +316,7 @@ def scan_opportunities(
             continue
         gross = abs(a.yes_price - b.yes_price)
         # Net edge after a rough cost haircut from both venues.
-        haircut = _FEE_BPS[a.venue] * 0.0 + 0.008  # spread/fee/gas approximation
-        net = round(gross - haircut, 4)
+        net = round(gross - _COST_HAIRCUT, 4)
         if net < min_edge:
             continue
         cheap, dear = (a, b) if a.yes_price < b.yes_price else (b, a)
@@ -282,6 +326,7 @@ def scan_opportunities(
             category=a.category,
             realizable_edge=net,
             max_size_usd=round(min(a.volume_usd or 0, b.volume_usd or 0) * 0.01, 2),
+            fair_value=consensus([a, b]),
             legs=[
                 Leg(venue=cheap.venue, market_id=cheap.market_id, side=Side.YES),
                 Leg(venue=dear.venue, market_id=dear.market_id, side=Side.NO),
@@ -308,10 +353,18 @@ def scan_opportunities(
             ],
         ))
 
+    # Dutch book: combinatorial arb across mutually-exclusive outcome groups.
+    out += scan_dutch_book(_MARKETS, min_edge, category)
+
+    # Entailment: logical-implication + term-structure violations (risk-free).
+    cat_markets = [m for m in _MARKETS if not category or (m.category or "") == category]
+    out += scan_entailment(cat_markets, min_edge)
+
     if kind:
         out = [o for o in out if o.kind.value == kind]
-    out.sort(key=lambda o: o.realizable_edge, reverse=True)
-    return out
+    # Risk-adjust (earliest close across all legs) + sort. No depth cap here: the
+    # mock keeps its curated volume-based sizes so fixture-based tests stay stable.
+    return finalize_opportunities(out, _MARKETS)
 
 
 # ---------------------------------------------------------------------------
@@ -320,57 +373,10 @@ def scan_opportunities(
 def realizable_edge(legs: list[Leg], size_usd: float) -> ExecutionEstimate:
     """Simulate filling `legs` for `size_usd` and return realizable edge.
 
-    Walks current mock depth, applies venue fees + gas + slippage.
-    # TODO: wire to real core.edge.realizable_edge(...).
+    Delegates the edge math to the shared ``core.algorithms`` (same code the live
+    engine uses); only the depth source (mock ``repo``) differs.
+    # TODO: wire to real core.edge via the live engine.
     """
-    fillable = 0.0
-    weighted_price = 0.0
-    fees = 0.0
-    gas = 0.0
-    slippage = 0.0
-    gross_price_ref = 0.0
-
-    per_leg_budget = size_usd / max(1, len(legs))
-    for leg in legs:
-        book = repo.get_orderbook(leg.venue.value, leg.market_id)
-        if not book:
-            continue
-        levels = book.yes_asks if leg.side == Side.YES else book.yes_bids
-        if not levels:
-            continue
-        ref = levels[0].price
-        gross_price_ref += ref
-        remaining = per_leg_budget
-        filled_here = 0.0
-        cost = 0.0
-        for lvl in levels:
-            take = min(remaining, lvl.size_usd)
-            if take <= 0:
-                break
-            cost += take * lvl.price
-            filled_here += take
-            remaining -= take
-        if filled_here <= 0:
-            continue
-        avg = cost / filled_here
-        weighted_price += avg * filled_here
-        fillable += filled_here
-        slippage += abs(avg - ref) * filled_here
-        gas += _GAS_USD[leg.venue]
-        fees += filled_here * _FEE_BPS[leg.venue] * 0.1  # rough taker fee on notional
-
-    avg_fill = (weighted_price / fillable) if fillable else 0.0
-    gross_edge = round(len(legs) - gross_price_ref, 4) if gross_price_ref else 0.0
-    net = fillable - fees - gas - slippage
-    realizable = round((net / size_usd) if size_usd else 0.0, 4)
-
-    return ExecutionEstimate(
-        requested_size_usd=round(size_usd, 2),
-        fillable_size_usd=round(fillable, 2),
-        avg_fill_price=round(avg_fill, 4),
-        gross_edge=gross_edge,
-        fees_usd=round(fees, 2),
-        gas_usd=round(gas, 2),
-        slippage_usd=round(slippage, 2),
-        realizable_edge=realizable,
+    return estimate_realizable_edge(
+        legs, size_usd, repo.get_orderbook
     )

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
+  "name": "io.github.johnsmithxy1mmm-sys/predmarket-mcp",
+  "description": "Prediction-market intelligence for agents. Cross-venue mispricings with REALIZABLE edge (net of fees, gas and slippage) across Polymarket and Kalshi, plus analysis no aggregator offers: scenario propagation across the market graph, logical-entailment arbitrage, implied distributions, and a server whose own forecasts are publicly Brier-scored against the market. Free discovery tier; paid realtime tools priced per call via x402.",
+  "version": "0.1.0",
+  "repository": {
+    "url": "https://github.com/johnsmithxy1mmm-sys/mcp",
+    "source": "github"
+  },
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://REPLACE-WITH-YOUR-DOMAIN/mcp"
+    }
+  ]
+}

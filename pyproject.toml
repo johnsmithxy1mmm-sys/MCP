@@ -13,11 +13,23 @@ dependencies = [
 [project.optional-dependencies]
 # Postgres metering backend (production). SQLite (stdlib) is the zero-infra default.
 postgres = ["asyncpg>=0.29"]
+# Semantic matcher tier (MATCHER=semantic|hybrid). Local ONNX bge embeddings,
+# CPU-only, no torch. First use downloads weights from Hugging Face once.
+semantic = ["fastembed>=0.4"]
+# Live Kalshi private endpoints (orderbook) need RSA-PSS request signing.
+kalshi = ["cryptography>=42"]
+# Shared state across instances (x402 replay guard + rate limiter) for horizontal
+# scaling. Without it the server runs single-instance on local SQLite/memory.
+redis = ["redis>=5.0"]
+# Real on-chain anchoring of the track-record Merkle root (EIP-1559 signing).
+# Without it, anchoring uses the deterministic MockChainAnchor.
+anchor = ["eth-account>=0.11"]
 
 [dependency-groups]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "cryptography>=42",  # for Kalshi signing tests
 ]
 
 [build-system]

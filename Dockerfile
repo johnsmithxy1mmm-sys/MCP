@@ -12,12 +12,25 @@ ENV UV_COMPILE_BYTECODE=1 \
 
 WORKDIR /app
 
+# Optional feature extras baked into the image, e.g.:
+#   docker build --build-arg EXTRAS="--extra semantic --extra kalshi --extra postgres"
+ARG EXTRAS=""
+# When semantic is baked in, pre-download the embedding weights at build time so
+# the runtime never needs Hugging Face egress (serverless / air-gapped).
+ARG WITH_SEMANTIC=false
+ENV FASTEMBED_CACHE_PATH=/app/.fastembed
+
 # Install deps first (better layer caching), then the source.
 COPY pyproject.toml uv.lock* README.md ./
 COPY src ./src
 COPY core ./core
 COPY pricing.yaml ./
-RUN uv sync --frozen --no-dev 2>/dev/null || uv sync --no-dev
+RUN uv sync --frozen --no-dev $EXTRAS 2>/dev/null || uv sync --no-dev $EXTRAS
+
+# Bake bge-small weights into the image when the semantic tier is enabled.
+RUN if [ "$WITH_SEMANTIC" = "true" ]; then \
+        uv run python -c "from fastembed import TextEmbedding; TextEmbedding('BAAI/bge-small-en-v1.5')"; \
+    fi
 
 EXPOSE 8000
 
