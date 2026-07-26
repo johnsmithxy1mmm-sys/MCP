@@ -19,23 +19,27 @@ def register(mcp: FastMCP) -> None:
     settings = get_settings()
 
     @mcp.resource(
-        "alerts://{client_id}",
+        "alerts://me",
         description=(
             "Peek the alerts currently queued for YOUR watches WITHOUT consuming "
-            "them (poll_alerts drains; this only reads). The client_id must match "
-            "your own caller identity. Use for a subscribe/refresh view; pair "
-            "with the webhook push for true delivery."
+            "them (poll_alerts drains; this only reads). Always scoped to you — "
+            "there is no URI that names another caller. Use for a "
+            "subscribe/refresh view; pair with the webhook push for delivery."
         ),
     )
-    def alerts_resource(client_id: str) -> dict:
-        from .tools import _client_id as caller_id
+    def alerts_resource() -> dict:
+        # No client_id parameter by design: a URI that names a principal invites
+        # IDOR, and the previous 'does it match your header?' check compared two
+        # caller-controlled values (audit INV-002).
+        from .identity import caller_identity, personal_access_error
 
-        # Alerts can carry paid intelligence — only the owning caller may peek.
-        if client_id != caller_id():
-            return {"error": "forbidden", "detail": "client_id does not match caller"}
-        alerts = deps.peek_alerts(client_id)
+        identity = caller_identity()
+        denied = personal_access_error(identity)
+        if denied is not None:
+            return denied
+        alerts = deps.peek_alerts(identity.id)
         return {
-            "client_id": client_id,
+            **identity.as_dict(),
             "alerts": alerts,
             "count": len(alerts),
             "note": "Undelivered alerts; call poll_alerts to consume them.",
@@ -124,20 +128,25 @@ def register(mcp: FastMCP) -> None:
                 **deps.staleness(deps.now())}
 
     @mcp.resource(
-        "portfolio://{client_id}",
+        "portfolio://me",
         description=(
             "YOUR own paper portfolio + leaderboard rank: every position you "
-            "committed via estimate_execution(commit=true), with realized P&L once "
-            "resolved. The client_id must match your caller identity. Free."
+            "committed via estimate_execution(commit=true), with realized P&L "
+            "once resolved. Always scoped to you — there is no URI that names "
+            "another caller. Free."
         ),
     )
-    def portfolio_resource(client_id: str) -> dict:
-        from .tools import _client_id as caller_id
+    def portfolio_resource() -> dict:
+        # A portfolio reveals an agent's strategy (markets, sides, sizes, P&L),
+        # so it is addressed only as 'me' and resolved from a derived identity.
+        from .identity import caller_identity, personal_access_error
 
-        # A portfolio can reveal an agent's strategy — only the owner may read it.
-        if client_id != caller_id():
-            return {"error": "forbidden", "detail": "client_id does not match caller"}
-        return {**deps.client_portfolio(client_id), **deps.staleness(deps.now())}
+        identity = caller_identity()
+        denied = personal_access_error(identity)
+        if denied is not None:
+            return denied
+        return {**identity.as_dict(), **deps.client_portfolio(identity.id),
+                **deps.staleness(deps.now())}
 
     @mcp.resource(
         "maker://{venue}/{market_id}",

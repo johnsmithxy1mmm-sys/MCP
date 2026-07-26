@@ -52,31 +52,14 @@ def _cost_note(tool_name: str) -> dict:
 
 
 def _client_id() -> str:
-    """Stable-per-caller id for watches/alerts — never a shared "anonymous".
+    """Owner key for watches / alerts / paper trades.
 
-    A shared bucket would let one caller drain another's alerts (deliver-once).
-    Prefer x-client-id; else hash the auth token (never store it raw); else
-    derive an ephemeral id from ip+user-agent so distinct callers stay isolated.
+    Derived from :func:`identity.caller_identity` — never from a value the
+    caller chose. See ``identity.py`` for why (audit INV-002).
     """
-    import hashlib
+    from .identity import caller_identity
 
-    try:
-        from fastmcp.server.dependencies import get_http_headers
-
-        headers = get_http_headers(include_all=True) or {}
-    except Exception:
-        headers = {}
-    cid = headers.get("x-client-id")
-    if cid:
-        return cid
-    auth = headers.get("authorization")
-    if auth:
-        return "auth-" + hashlib.sha256(auth.encode()).hexdigest()[:16]
-    ip = headers.get("x-forwarded-for", "").split(",")[0].strip()
-    ua = headers.get("user-agent", "")
-    if ip or ua:
-        return "anon-" + hashlib.sha256(f"{ip}|{ua}".encode()).hexdigest()[:16]
-    return "anon-local"
+    return caller_identity().id
 
 
 def register(mcp: FastMCP) -> None:
@@ -375,7 +358,7 @@ def register(mcp: FastMCP) -> None:
             trade_id = deps.commit_paper_trade(_client_id(), legs, size_usd)
             if trade_id is not None:
                 response["paper_trade_id"] = trade_id
-                response["leaderboard"] = "portfolio://" + _client_id()
+                response["leaderboard"] = "portfolio://me"
         return response
 
     @mcp.tool(

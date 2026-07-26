@@ -155,7 +155,8 @@ class BillingContext:
             challenge["error_detail"] = str(exc)
             return PaymentDecision(ok=False, challenge=challenge)
         self.receipts.save(receipt)
-        return PaymentDecision(ok=True, challenge=None, receipt_id=receipt.receipt_id)
+        return PaymentDecision(ok=True, challenge=None, receipt_id=receipt.receipt_id,
+                               payer=receipt.payer)
 
 
 @dataclass
@@ -163,6 +164,10 @@ class PaymentDecision:
     ok: bool
     challenge: dict | None
     receipt_id: str | None = None
+    # Payer address from the VERIFIED payment. This is a proven identity (the
+    # facilitator checked the signature), so the identity layer can key
+    # ownership on it — "whoever paid owns it" (audit INV-002).
+    payer: str | None = None
 
 
 @lru_cache(maxsize=1)
@@ -255,6 +260,11 @@ class X402Middleware:
         )
         if not decision.ok:
             return await _send_402(send, decision.challenge)
+        # Publish the proven payer for the rest of this request: the tool layer
+        # uses it as an identity that the caller cannot forge.
+        from ..identity import set_verified_payer
+
+        set_verified_payer(decision.payer)
         return await self.app(scope, _replay(messages, receive), send)
 
 

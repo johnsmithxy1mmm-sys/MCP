@@ -1,4 +1,10 @@
-"""INV-nn repro: может ли вызывающий прочитать чужие алерты/портфель."""
+"""INV-002 (ИСПРАВЛЕНА): попытка прочитать чужие алерты/портфель.
+
+До правки: подставить `x-client-id: <жертва>` и запросить `portfolio://<жертва>` —
+обе стороны проверки владения были подконтрольны атакующему, доступ разрешался.
+После: URI, называющего чужого принципала, не существует, а `me` резолвится из
+выведенной идентичности.
+"""
 import asyncio, json
 from unittest.mock import patch
 from fastmcp import Client
@@ -6,20 +12,25 @@ from predmarket_mcp.server import mcp
 from predmarket_mcp import deps
 
 async def main():
-    # Жертва создаёт watch и получает алерт.
-    deps.create_watch("victim-corp", 0.0)
-    # Жертва коммитит бумажную сделку (портфель = её стратегия).
     from core.models import Leg, Side, Venue
+    deps.create_watch("victim-corp", 0.0)
     deps.commit_paper_trade("victim-corp",
         [Leg(venue=Venue.KALSHI, market_id="kx-btc-100k-eoy26", side=Side.YES)], 5000)
 
-    # АТАКУЮЩИЙ: просто подставляет заголовок x-client-id с чужим id.
-    attacker_headers = {"x-client-id": "victim-corp"}
-    with patch("fastmcp.server.dependencies.get_http_headers", return_value=attacker_headers):
+    attacker = {"x-client-id": "victim-corp"}
+    with patch("fastmcp.server.dependencies.get_http_headers", return_value=attacker):
         async with Client(mcp) as c:
-            a = json.loads((await c.read_resource("alerts://victim-corp"))[0].text)
-            p = json.loads((await c.read_resource("portfolio://victim-corp"))[0].text)
-    print("ALERTS  ->", "ОТКАЗ" if a.get("error") else f"ПРОЧИТАНО, алертов: {a.get('count')}")
-    print("PORTFOLIO ->", "ОТКАЗ" if p.get("error") else
-          f"ПРОЧИТАНО, сделок: {len(p.get('trades', []))}, размер: ${p['trades'][0]['size_usd'] if p.get('trades') else '-'}")
+            for uri in ("alerts://victim-corp", "portfolio://victim-corp"):
+                try:
+                    await c.read_resource(uri)
+                    print(f"  ПРОЧИТАНО {uri}  <-- УТЕЧКА")
+                except Exception as e:
+                    print(f"  недоступно {uri}: {type(e).__name__} (URI не существует)")
+            pf = json.loads((await c.read_resource("portfolio://me"))[0].text)
+            al = json.loads((await c.read_resource("alerts://me"))[0].text)
+    print()
+    print("ИНВАРИАНТ 'клиент видит только своё':",
+          "СОБЛЮДЁН" if (pf["trades"] == [] and al["count"] == 0)
+          else f"НАРУШЕН (сделок {len(pf['trades'])}, алертов {al['count']})")
+    print(f"  идентичность вызывающего: {pf['identity']} (proven={pf['identity_proven']})")
 asyncio.run(main())
