@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 from ..models import Market, OrderbookLevel, OrderbookSnapshot, Venue
-from .base import VenueAdapter, _matches_query, fetch_json
+from .base import VenueAdapter, fetch_json, normalize_rows
 
 KALSHI_URL = os.getenv("KALSHI_API_URL", "https://api.elections.kalshi.com/trade-api/v2")
 _BASE_PATH = urlparse(KALSHI_URL).path.rstrip("/")  # e.g. /trade-api/v2
@@ -89,16 +89,8 @@ class KalshiAdapter(VenueAdapter):
             params={"limit": limit, "status": "open"},
             headers=_auth_headers("GET", "/markets"), venue="Kalshi",
         )
-        rows = (data or {}).get("markets", [])
-        markets: list[Market] = []
-        for row in rows:
-            m = self._normalize_market(row)
-            if m is None:
-                continue
-            if not _matches_query(query, m):
-                continue
-            markets.append(m)
-        return markets
+        rows = data.get("markets") if isinstance(data, dict) else None
+        return normalize_rows(rows, self._normalize_market, query)
 
     def _normalize_market(self, row: dict) -> Market | None:
         ticker = str(row.get("ticker") or "").strip()

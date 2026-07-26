@@ -43,8 +43,13 @@ class Market(BaseModel):
     market_id: str
     title: str
     category: str | None = None
-    yes_price: float = Field(description="Normalized YES price in [0, 1].")
-    no_price: float = Field(description="Normalized NO price in [0, 1].")
+    # ENFORCED, not merely documented: a venue returning an out-of-range price
+    # (unit-conversion change, garbage row) used to construct a Market with
+    # yes_price=999 and poison every downstream number — edge, probabilities,
+    # the house forecast, calibration — and persist it to history (audit
+    # INV-005). Adapters skip rows that fail this check rather than crash.
+    yes_price: float = Field(ge=0.0, le=1.0, description="Normalized YES price in [0, 1].")
+    no_price: float = Field(ge=0.0, le=1.0, description="Normalized NO price in [0, 1].")
     volume_usd: float | None = None
     close_time: datetime | None = None
     # Mutually-exclusive outcome group (e.g. "2028-president-party"); markets that

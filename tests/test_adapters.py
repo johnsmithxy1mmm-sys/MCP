@@ -194,3 +194,74 @@ def test_live_engine_scans_over_adapters(monkeypatch):
 
     ops = live.scan_opportunities(0.0)
     assert any(o.kind.value == "cross_venue" for o in ops)
+
+
+# --- INV-005 / INV-008: граница с площадкой (регрессии аудита) ---------------
+def _poly_with(handler):
+    """PolymarketAdapter поверх заданного ответа площадки."""
+    import httpx
+    from core.adapters import base
+    from core import circuit
+
+    base._CLIENTS.clear()
+    circuit._BREAKERS.clear()
+    orig = base.make_client
+    base.make_client = lambda url, timeout=None: httpx.Client(
+        base_url=url, transport=httpx.MockTransport(handler))
+    try:
+        from core.adapters.polymarket import PolymarketAdapter
+        return PolymarketAdapter().fetch_markets()
+    finally:
+        base.make_client = orig
+        base._CLIENTS.clear()
+
+
+def _row(yes="0.5", no="0.5"):
+    return {"conditionId": "c1", "question": "Will X?",
+            "outcomePrices": f'["{yes}","{no}"]', "outcomes": '["Yes","No"]'}
+
+
+def test_out_of_range_price_is_rejected_not_ingested():
+    """INV-005: цена 999 от площадки не должна порождать Market.
+
+    Раньше модель лишь ДОКУМЕНТИРОВАЛА диапазон [0,1] и принимала что угодно —
+    один такой рынок отравлял edge, вероятности, house-прогноз, калибровку и
+    попадал в историю. Теперь он отбраковывается на границе.
+    """
+    import httpx
+
+    ms = _poly_with(lambda r: httpx.Response(200, json=[_row("999", "-5")]))
+    assert ms == []
+    # ...а исправный рынок в том же ответе по-прежнему проходит.
+    ms = _poly_with(lambda r: httpx.Response(200, json=[_row("999", "-5"), _row()]))
+    assert len(ms) == 1 and 0.0 <= ms[0].yes_price <= 1.0
+
+
+def test_model_enforces_price_range():
+    """Инвариант держится на уровне модели, а не только адаптера."""
+    import pytest as _pytest
+    from pydantic import ValidationError
+    from core.models import Market, Venue
+
+    with _pytest.raises(ValidationError):
+        Market(venue=Venue.KALSHI, market_id="m", title="t", yes_price=999.0, no_price=0.0)
+    with _pytest.raises(ValidationError):
+        Market(venue=Venue.KALSHI, market_id="m", title="t", yes_price=0.5, no_price=-0.1)
+
+
+def test_malformed_rows_skip_instead_of_crashing():
+    """INV-008: None/не-словарь в массиве ронял адаптер мимо границы
+    AdapterError, то есть 500 на платном вызове."""
+    import httpx
+
+    ms = _poly_with(lambda r: httpx.Response(200, json=[None, _row(), "строка", 42]))
+    assert len(ms) == 1                      # уцелел ровно исправный рынок
+
+    ms = _poly_with(lambda r: httpx.Response(200, json=[[[[]]], {"nested": {"deep": 1}}]))
+    assert ms == []                          # без исключения
+
+
+def test_wrong_top_level_shape_yields_no_markets():
+    import httpx
+
+    assert _poly_with(lambda r: httpx.Response(200, json={"unexpected": "shape"})) == []

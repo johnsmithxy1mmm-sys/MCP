@@ -15,7 +15,7 @@ import os
 from datetime import datetime, timezone
 
 from ..models import Market, OrderbookLevel, OrderbookSnapshot, Venue
-from .base import VenueAdapter, _matches_query, fetch_json
+from .base import VenueAdapter, fetch_json, normalize_rows
 
 GAMMA_URL = os.getenv("POLYMARKET_GAMMA_URL", "https://gamma-api.polymarket.com")
 CLOB_URL = os.getenv("POLYMARKET_CLOB_URL", "https://clob.polymarket.com")
@@ -54,15 +54,7 @@ class PolymarketAdapter(VenueAdapter):
             "order": "volume", "ascending": "false",
         }
         rows = fetch_json(GAMMA_URL, "/markets", params=params, venue="Polymarket")
-        markets: list[Market] = []
-        for row in rows if isinstance(rows, list) else []:
-            m = self._normalize_market(row)
-            if m is None:
-                continue
-            if not _matches_query(query, m):
-                continue
-            markets.append(m)
-        return markets
+        return normalize_rows(rows, self._normalize_market, query)
 
     def _normalize_market(self, row: dict) -> Market | None:
         prices = _as_list(row.get("outcomePrices"))
