@@ -361,3 +361,48 @@ def test_failed_settlement_does_not_free_the_claim(tmp_path):
     assert first.ok is False and second.ok is False
     # Второй отказ — именно из-за занятого отпечатка, а не из-за фасилитатора.
     assert second.challenge["error_detail"] == "payment_reused"
+
+
+# --- INV-003: отказ метеринга не решает судьбу вызова (регрессия аудита) -----
+@pytest.mark.asyncio
+async def test_metering_failure_preserves_a_successful_call(client, monkeypatch):
+    """Запись метеринга в `finally` раньше отменяла успешный `return result`.
+
+    В платном режиме платёж расчитывается ДО исполнения инструмента, поэтому
+    клиент оказывался в худшем из миров: деньги списаны, инструмент отработал,
+    ответ — ошибка, записи об этом нет.
+    """
+    from predmarket_mcp.billing.middleware import get_billing
+    from predmarket_mcp.ops import METRICS
+
+    billing = get_billing()
+
+    def boom(usage):
+        raise OSError("disk I/O error")
+
+    monkeypatch.setattr(billing.metering, "record", boom)
+    before = METRICS.snapshot().get("metering_write_failures_total", 0)
+
+    r = (await client.call_tool("find_mispricing", {"min_edge": 0.02})).data
+    assert "opportunities" in r          # результат дошёл до клиента
+
+    # ...и потеря биллинговых данных не молчаливая — она видна на /metrics.
+    after = METRICS.snapshot().get("metering_write_failures_total", 0)
+    assert after == before + 1
+
+
+@pytest.mark.asyncio
+async def test_metering_failure_does_not_mask_a_real_tool_error(client, monkeypatch):
+    """Отказ хранилища не должен подменять настоящую ошибку инструмента."""
+    from predmarket_mcp.billing.middleware import get_billing
+    from predmarket_mcp import deps
+
+    billing = get_billing()
+    monkeypatch.setattr(billing.metering, "record",
+                        lambda usage: (_ for _ in ()).throw(OSError("disk I/O error")))
+    monkeypatch.setattr(deps, "scan_opportunities",
+                        lambda *a, **k: (_ for _ in ()).throw(ValueError("engine exploded")))
+
+    with pytest.raises(Exception) as exc:
+        await client.call_tool("find_mispricing", {"min_edge": 0.02})
+    assert "engine exploded" in str(exc.value)     # не "disk I/O error"

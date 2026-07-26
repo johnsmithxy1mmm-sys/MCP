@@ -16,7 +16,6 @@ import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
 
 from ..config import Settings
 
@@ -59,9 +58,18 @@ class LocalBackend(MeteringBackend):
         elif db_url.startswith("sqlite://"):
             self._path = db_url[len("sqlite://"):]
         else:
-            # Non-sqlite (e.g. postgres) — fall back to a local file so the
-            # server never crashes on a missing DB. Real PG path is a TODO.
-            self._path = str(Path.cwd() / "metering.db")
+            # Fail LOUDLY. This store holds the money: usage, receipts and the
+            # x402 replay guard. Silently falling back to cwd/metering.db put
+            # all three on the container's ephemeral filesystem instead of the
+            # mounted volume, so a one-character typo in METERING_DB_URL lost
+            # revenue records AND re-opened consumed payments on every redeploy
+            # — with nothing in the logs (audit INV-010).
+            raise ValueError(
+                f"unsupported METERING_DB_URL {db_url!r}: expected sqlite:///ABSOLUTE/PATH "
+                "(note the three slashes plus a leading slash for an absolute path). "
+                "The metering store holds billing and replay-protection data and "
+                "must not silently land somewhere unintended."
+            )
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:

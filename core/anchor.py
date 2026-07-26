@@ -187,6 +187,9 @@ class AnchorStore:
         self._url = db_url or os.getenv("ANCHOR_DB_URL", "sqlite:///anchors.db")
         self._path = _sqlite_path(self._url)
         self._lock = threading.Lock()
+        # Guards the whole read-decide-submit-save sequence (see maybe_anchor);
+        # distinct from _lock, which only guards individual row access.
+        self._anchor_lock = threading.RLock()
         self._min_interval = float(os.getenv("ANCHOR_MIN_INTERVAL", "3600"))
         self._init_db()
 
@@ -229,9 +232,20 @@ class AnchorStore:
         return rec
 
     def maybe_anchor(self, root: str | None, leaf_count: int, anchor: ChainAnchor) -> dict | None:
-        """Anchor ``root`` if it's new and the min interval has elapsed."""
+        """Anchor ``root`` if it's new and the min interval has elapsed.
+
+        Serialized on a dedicated lock: read-decide-submit-save spans an
+        IRREVERSIBLE chain write, so two concurrent /track-record requests could
+        otherwise both pass the interval check and burn gas twice on the same
+        root (audit INV-007). The lock is separate from the row lock the store
+        methods take, so it can be held across the whole decision.
+        """
         if not root:
             return None
+        with self._anchor_lock:
+            return self._maybe_anchor_locked(root, leaf_count, anchor)
+
+    def _maybe_anchor_locked(self, root: str, leaf_count: int, anchor: ChainAnchor) -> dict | None:
         latest = self.latest()
         if latest is not None:
             if latest["root"] == root:

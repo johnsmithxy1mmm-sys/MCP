@@ -25,7 +25,6 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
 
 from ..config import Settings
 
@@ -52,11 +51,18 @@ def payment_fingerprint(payment: dict) -> str:
 
 
 def _sqlite_path_of(db_url: str) -> str:
+    """Resolve the receipt/nonce store path. Raises on an unrecognized DSN.
+
+    Same reasoning as the metering backend: a silent cwd fallback put the
+    replay guard on ephemeral storage, making consumed payments reusable after
+    a restart (audit INV-010).
+    """
     if db_url.startswith("sqlite:///"):
         return db_url[len("sqlite:///"):]
     if db_url.startswith("sqlite://"):
         return db_url[len("sqlite://"):]
-    return str(Path.cwd() / "metering.db")
+    raise ValueError(
+        f"unsupported store URL {db_url!r}: expected sqlite:///ABSOLUTE/PATH")
 
 
 # --- data types -------------------------------------------------------------
@@ -273,12 +279,10 @@ class ReceiptStore:
 
     def __init__(self, db_url: str):
         self._lock = threading.Lock()
-        if db_url.startswith("sqlite:///"):
-            self._path = db_url[len("sqlite:///"):]
-        elif db_url.startswith("sqlite://"):
-            self._path = db_url[len("sqlite://"):]
-        else:
-            self._path = str(Path.cwd() / "metering.db")
+        # Shared resolver, not a private copy: this logic existed inline in three
+        # places and only two were fixed, so an unrecognized DSN still silently
+        # relocated the receipt store (audit INV-010).
+        self._path = _sqlite_path_of(db_url)
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:

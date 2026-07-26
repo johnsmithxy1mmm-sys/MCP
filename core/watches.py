@@ -124,13 +124,22 @@ class WatchStore:
         self, client_id: str, min_edge: float,
         category: str | None = None, kind: str | None = None, event: str | None = None,
     ) -> str:
-        if self.count_active(client_id) >= WATCH_MAX_PER_CLIENT:
-            raise WatchLimitError(
-                f"active watch limit reached ({WATCH_MAX_PER_CLIENT}); "
-                "cancel a watch before adding another"
-            )
         watch_id = "w_" + uuid.uuid4().hex[:12]
+        # Count and insert under ONE lock: count_active() used to take and
+        # release the lock before the insert took it again, so concurrent
+        # requests all passed the check and overshot the cap (audit INV-009).
+        # Each watch is evaluated on every fire, so an unbounded count is a
+        # per-scan CPU cost the caller controls.
         with self._lock, self._connect() as conn:
+            active = conn.execute(
+                "SELECT COUNT(*) FROM watches WHERE client_id = ? AND active = 1",
+                (client_id,),
+            ).fetchone()[0]
+            if active >= WATCH_MAX_PER_CLIENT:
+                raise WatchLimitError(
+                    f"active watch limit reached ({WATCH_MAX_PER_CLIENT}); "
+                    "cancel a watch before adding another"
+                )
             conn.execute(
                 "INSERT INTO watches (watch_id, client_id, min_edge, category, kind, event, active, created_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, 1, ?)",

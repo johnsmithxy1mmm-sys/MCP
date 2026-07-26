@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass
@@ -43,6 +44,8 @@ from .x402 import (
     decode_payment_header,
     payment_fingerprint,
 )
+
+_log = logging.getLogger("predmarket.billing")
 
 PAYMENT_HEADER = "x-payment"
 
@@ -226,8 +229,27 @@ class MeteringMiddleware(Middleware):
                 paid_via=paid_via,
                 params=params_meta,
             )
-            # SQLite write off the event loop.
-            await anyio.to_thread.run_sync(self.billing.metering.record, usage)
+            # SQLite write off the event loop — and it MUST NOT decide the fate
+            # of the call. Raising here (disk full, DB locked) escaped the
+            # `finally`, cancelled a successful `return result` and replaced any
+            # real tool exception with a storage error. Under the paid gate the
+            # payment has already settled by this point, so the caller would
+            # have paid, the tool would have run, and they would still get an
+            # error with no usage record (audit INV-003).
+            #
+            # The write is best effort; the FAILURE is not silent — it bumps a
+            # counter that surfaces on /metrics so lost billing data is alarmable.
+            try:
+                await anyio.to_thread.run_sync(self.billing.metering.record, usage)
+            except Exception:
+                try:
+                    from ..ops import METRICS
+
+                    METRICS.inc("metering_write_failures_total")
+                except Exception:
+                    pass
+                _log.exception(
+                    "metering write failed for %s (call outcome preserved)", tool_name)
 
 
 # --- raw ASGI middleware: real HTTP 402 enforcement -------------------------

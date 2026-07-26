@@ -120,3 +120,27 @@ def test_live_repo_indexes_market_lookups(monkeypatch):
     # Second lookup is served from the O(1) index, not a rescan.
     assert repo._by_id[("kalshi", "KX-1")] is m
     assert repo.get_market("kalshi", "nope") is None
+
+
+# --- INV-010: хранилище денег не уходит молча в неожиданное место ------------
+def test_unrecognized_metering_dsn_fails_loudly():
+    """Молчаливый фолбэк в cwd/metering.db клал usage, receipts И replay-guard
+    на эфемерную ФС контейнера вместо тома: опечатка в один символ теряла
+    выручку и делала израсходованные платежи снова годными после рестарта."""
+    import pytest
+    from predmarket_mcp.billing.metering import LocalBackend
+    from predmarket_mcp.billing.x402 import NonceStore, ReceiptStore
+
+    for bad in ("postgresql://user:pw@db:5432/predmarket", "sqlite//typo.db", "/data/metering.db"):
+        with pytest.raises(ValueError, match="sqlite:///"):
+            LocalBackend(bad)
+        with pytest.raises(ValueError):
+            ReceiptStore(bad)
+        with pytest.raises(ValueError):
+            NonceStore(bad)
+
+
+def test_correct_dsn_still_works(tmp_path):
+    from predmarket_mcp.billing.metering import LocalBackend
+
+    assert LocalBackend(f"sqlite:///{tmp_path / 'm.db'}").count() == 0

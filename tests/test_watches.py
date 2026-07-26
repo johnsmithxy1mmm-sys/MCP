@@ -87,3 +87,29 @@ async def test_watch_then_poll_alerts_tool_flow(client):
     # Those were delivered with registration, so a follow-up poll has nothing new.
     follow = (await client.call_tool("poll_alerts", {})).data
     assert follow["count"] == 0
+
+
+def test_watch_cap_holds_under_concurrency(tmp_path, monkeypatch):
+    """INV-009: count_active() отпускал лок до вставки, и параллельные запросы
+    все проходили проверку — лимит перепрыгивался. Каждый watch оценивается на
+    каждом fire, поэтому это управляемая клиентом нагрузка на каждый скан."""
+    import threading
+    import core.watches as w
+
+    monkeypatch.setattr(w, "WATCH_MAX_PER_CLIENT", 5)
+    store = _store(tmp_path)
+    barrier = threading.Barrier(20)
+
+    def worker():
+        barrier.wait()
+        try:
+            store.create_watch("greedy", 0.01)
+        except w.WatchLimitError:
+            pass
+
+    threads = [threading.Thread(target=worker) for _ in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert store.count_active("greedy") <= 5
